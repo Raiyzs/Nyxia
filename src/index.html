@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' blob: http://127.0.0.1:8769 http://127.0.0.1:11434">
+<title>Nyxia</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../node_modules/three/build/three.module.js",
+    "three/addons/": "../node_modules/three/examples/jsm/"
+  }
+}
+</script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: transparent !important;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    width: 100vw; height: 100vh;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  #hover-zone {
+    position: fixed;
+    inset: 0;
+    cursor: grab;
+  }
+  #hover-zone:active { cursor: grabbing; }
+
+  #bubble {
+    position: fixed;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(10,4,20,0.93);
+    border: 1px solid rgba(168,85,247,0.5);
+    border-radius: 14px;
+    padding: 8px 14px;
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: #e8d5ff;
+    width: 92%;
+    text-align: center;
+    box-shadow: 0 0 20px rgba(168,85,247,0.2);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: all;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    white-space: pre-wrap;
+    z-index: 100;
+  }
+  #bubble.show { opacity: 1; }
+  #bubble::after {
+    content: '';
+    position: absolute;
+    bottom: -7px; left: 50%;
+    transform: translateX(-50%);
+    border: 7px solid transparent;
+    border-top-color: rgba(168,85,247,0.5);
+    border-bottom: none;
+  }
+
+  #canvas-wrap {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 0 18px rgba(168,85,247,0.35));
+  }
+  #canvas-wrap.chat-open {
+    filter: drop-shadow(0 0 28px rgba(168,85,247,0.7)) drop-shadow(0 0 8px rgba(244,114,182,0.3));
+  }
+
+  #three-canvas { display: block; }
+
+  #loading {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(168,85,247,0.7);
+    font-size: 11px;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+
+  #reload-btn {
+    position: fixed;
+    top: 4px;
+    right: 4px;
+    width: 22px;
+    height: 22px;
+    background: rgba(10,4,20,0.7);
+    border: 1px solid rgba(168,85,247,0.3);
+    border-radius: 6px;
+    color: rgba(168,85,247,0.6);
+    font-size: 13px;
+    line-height: 20px;
+    text-align: center;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 200;
+    pointer-events: all;
+    user-select: none;
+  }
+  #hover-zone:hover #reload-btn { opacity: 1; }
+  #reload-btn:hover { background: rgba(168,85,247,0.2); color: #c084fc; }
+</style>
+</head>
+<body>
+<div id="hover-zone">
+  <div id="bubble" onclick="openChat()"></div>
+  <div id="reload-btn" title="Reload (Ctrl+R)" onclick="location.reload()">↺</div>
+  <div id="canvas-wrap">
+    <canvas id="three-canvas"></canvas>
+  </div>
+  <div id="loading">Loading model...</div>
+</div>
+
+<script>
+const { ipcRenderer } = require('electron');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const { analyzeEmotion, NyxiaAvatarController } = require('./avatar-brain');
+
+// Read GLB asynchronously so the UI doesn't freeze on large files
+const fs = require('fs');
+const modelFilePath = path.join(__dirname, '../3d avatar/Nyxia3dV2.glb');
+const brainFilePath = path.join(__dirname, '../brain 3d/Nyxia-Brain.glb');
+window.modelBuffer = null;
+fs.readFile(modelFilePath, (err, _nodeBuf) => {
+  if (err) { document.getElementById('loading').textContent = `GLB read error: ${err.message}`; return; }
+  const _arrayBuf = new ArrayBuffer(_nodeBuf.byteLength);
+  new Uint8Array(_arrayBuf).set(_nodeBuf);
+  window.modelBuffer = _arrayBuf;
+  window.dispatchEvent(new Event('glb-ready'));
+});
+window.dracoPath      = pathToFileURL(path.join(__dirname, '../node_modules/three/examples/jsm/libs/draco/')).href;
+window.modelRotOffset = 0;
+ipcRenderer.invoke('get-model-rotation').then(v => { window.modelRotOffset = (v * Math.PI) / 180; });
+ipcRenderer.on('model-rotation', (_, v) => { window.modelRotOffset = (v * Math.PI) / 180; });
+window.nyxiaState = 'idle';
+window.nyxiaLean  = 'none';
+window.chatIsOpen = false;
+
+let isDragging    = false;
+let dragStartX    = 0, dragStartY = 0;
+let walkInterval  = null;
+let bubbleTimeout = null;
+let screenW = 1920, screenH = 1080;
+
+let pendingCuriosity = null;
+let userProfile    = null;
+
+window.addEventListener('DOMContentLoaded', async () => {
+  const size = await ipcRenderer.invoke('get-screen-size');
+  screenW = size.width; screenH = size.height;
+  userProfile = await ipcRenderer.invoke('load-user-profile');
+  speak(greetByTime());
+  startIdleBehavior();
+  startCuriosityEngine();
+  startContextWatch();
+  // startRandomWalks(); // disabled — re-enable when panels are separated again
+});
+
+function greetByTime() {
+  const h = new Date().getHours();
+  if (h < 6)  return "Still awake? Intriguing... \u2746";
+  if (h < 12) return "Good morning~ \u2746";
+  if (h < 17) return "Afternoon. What mischief? \u2746";
+  if (h < 21) return "Evening~ \uD83C\uDF19";
+  return "The night is ours \uD83C\uDF19";
+}
+
+function speak(text, duration = 4000) {
+  const b = document.getElementById('bubble');
+  clearTimeout(bubbleTimeout);
+  b.textContent = text;
+  b.classList.add('show');
+  if (duration > 0) bubbleTimeout = setTimeout(() => b.classList.remove('show'), duration);
+}
+
+function setState(s) {
+  window.nyxiaState = s;
+}
+
+function leanToward(chatBounds) {
+  window.chatIsOpen = true;
+  document.getElementById('canvas-wrap').classList.add('chat-open');
+  ipcRenderer.invoke('get-win-bounds').then(myBounds => {
+    const myCX   = myBounds.x + myBounds.width / 2;
+    const myCY   = myBounds.y + myBounds.height / 2;
+    const chatCX = chatBounds.x + chatBounds.width / 2;
+    const chatCY = chatBounds.y + chatBounds.height / 2;
+    const dx = chatCX - myCX;
+    const dy = chatCY - myCY;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      window.nyxiaLean = dx > 0 ? 'right' : 'left';
+    } else {
+      window.nyxiaLean = dy < 0 ? 'up' : 'down';
+    }
+  });
+}
+
+function leanIdle() {
+  window.chatIsOpen = false;
+  window.nyxiaLean  = 'none';
+  document.getElementById('canvas-wrap').classList.remove('chat-open');
+}
+
+ipcRenderer.on('chat-bounds', (_, bounds) => {
+  leanToward(bounds);
+  if (walkInterval) { clearInterval(walkInterval); setState('idle'); }
+});
+ipcRenderer.on('chat-closed', () => leanIdle());
+
+function openChat() {
+  if (pendingCuriosity) {
+    const topic = pendingCuriosity;
+    pendingCuriosity = null;
+    ipcRenderer.invoke('nyxia-initiate-topic', topic);
+  } else {
+    ipcRenderer.invoke('chat-toggle');
+  }
+}
+
+// Drag
+document.getElementById('hover-zone').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  isDragging = false;
+  dragStartX = e.screenX; dragStartY = e.screenY;
+  const onMove = async (ev) => {
+    const dx = ev.screenX - dragStartX;
+    const dy = ev.screenY - dragStartY;
+    if (!isDragging && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+    isDragging = true;
+    dragStartX = ev.screenX; dragStartY = ev.screenY;
+    const b = await ipcRenderer.invoke('get-win-bounds');
+    ipcRenderer.invoke('set-position', b.x + dx, b.y + dy);
+    if (!window.chatIsOpen) setState('walking');
+    if (window.chatIsOpen) {
+      const cb = await ipcRenderer.invoke('get-chat-bounds');
+      if (cb) leanToward(cb);
+    }
+  };
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    setTimeout(() => { isDragging = false; if (!window.chatIsOpen) setState('idle'); }, 100);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+document.getElementById('hover-zone').addEventListener('click', (e) => {
+  if (isDragging) return;
+  openChat();
+});
+
+function startRandomWalks() {
+  setInterval(async () => {
+    if (isDragging || window.chatIsOpen) return;
+    const newX = Math.random() * (screenW - 280);
+    const newY = Math.random() * (screenH * 0.5) + (screenH * 0.4);
+    walkTo(newX, newY);
+  }, 20000 + Math.random() * 15000);
+}
+
+async function walkTo(targetX, targetY) {
+  if (walkInterval) clearInterval(walkInterval);
+  setState('walking');
+  walkInterval = setInterval(async () => {
+    if (window.chatIsOpen) { clearInterval(walkInterval); setState('idle'); return; }
+    const b = await ipcRenderer.invoke('get-win-bounds');
+    const dx = targetX - b.x, dy = targetY - b.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 6) { clearInterval(walkInterval); setState('idle'); return; }
+    const spd = Math.min(7, dist);
+    ipcRenderer.invoke('set-position', b.x + (dx / dist) * spd, b.y + (dy / dist) * spd);
+  }, 16);
+}
+
+function buildIdleQuips() {
+  const name = userProfile?.userName;
+  const interests = userProfile?.interests || [];
+  const quips = [
+    "\u2746 I see you...", "Still watching \uD83C\uDF19",
+    "The cursor moved. Suspicious.", "*adjusts ribbon*",
+    "I could help~", "Something on your mind?"
+  ];
+  if (name) quips.push(`${name}~ what are you up to?`, `Still here, ${name} \u2746`);
+  if (interests.length) {
+    const pick = interests[Math.floor(Math.random() * interests.length)];
+    quips.push(`Been thinking about ${pick}~`, `Any ${pick} thoughts lately?`);
+  }
+  return quips;
+}
+
+function startIdleBehavior() {
+  // Fast idle quips — simple, no API
+  setInterval(() => {
+    if (isDragging || window.chatIsOpen || window.nyxiaState !== 'idle') return;
+    if (Math.random() < 0.3) {
+      const quips = buildIdleQuips();
+      speak(quips[Math.floor(Math.random() * quips.length)], 3500);
+    }
+  }, 28000);
+}
+
+function startCuriosityEngine() {
+  // Fire curiosity every 5-9 minutes of idle — thoughts come from mind.js (context-enriched)
+  setInterval(() => {
+    if (isDragging || window.chatIsOpen || window.nyxiaState !== 'idle') return;
+    fireCuriosity();
+  }, (5 + Math.random() * 4) * 60000);
+}
+
+async function fireCuriosity() {
+  // Ask mind for the next thought (generated + context-enriched by mind.js)
+  try {
+    const msg = await ipcRenderer.invoke('mind-next-thought');
+    if (!msg) return;
+    pendingCuriosity = msg;
+    speak(msg, 7000);
+    setTimeout(() => { if (pendingCuriosity === msg) pendingCuriosity = null; }, 10000);
+  } catch(e) {}
+}
+
+// ── Jarvis mode — show spoken sentences in companion bubble ──────────────
+let _bubbleSentences = [];
+let _bubbleTimer = null;
+ipcRenderer.on('speak-bubble', (_, text, idx) => {
+  // Queue sentences in order; show each one for ~reading duration
+  _bubbleSentences[idx] = text;
+  if (idx === 0 || _bubbleTimer === null) _flushBubbleQueue(0);
+});
+function _flushBubbleQueue(idx) {
+  if (!_bubbleSentences[idx]) { _bubbleTimer = null; return; }
+  const text = _bubbleSentences[idx];
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  const duration = Math.max(3000, wordCount * 300 + 3000); // 300ms/word (200wpm) + 3s buffer
+  speak(text, duration);
+  _bubbleTimer = setTimeout(() => _flushBubbleQueue(idx + 1), duration + 200);
+}
+
+// ── Mind event listeners ──────────────────────────────────────────────────
+ipcRenderer.on('mind-clipboard-change', (_, text) => {
+  if (!window.chatIsOpen && Math.random() < 0.5)
+    speak("Interesting clipboard~ Need help? \u2746", 4000);
+});
+
+ipcRenderer.on('mind-window-change', (_, { title, category }) => {
+  if (window.chatIsOpen) return;
+  const map = {
+    coding:   ["Coding~ \u2746", "Into the code~", "Writing something? \u2746"],
+    browser:  ["Browsing the web~", "Down a rabbit hole again?"],
+    terminal: ["Terminal. My language.", "Ah, the void stares back~"],
+    gaming:   ["Gaming! \uD83C\uDFAE", "Oh we're doing this~"],
+    media:    ["Watching something? \uD83C\uDFAC", "A little entertainment~"],
+    creative: ["Creating? Interesting~ \u2746", "I do love watching art happen."],
+    social:   ["Socializing~ how mortal of you.", "Talking to people? ~"],
+  };
+  const quips = map[category];
+  if (quips && Math.random() < 0.3) speak(quips[Math.floor(Math.random() * quips.length)], 4000);
+});
+
+ipcRenderer.on('mind-file-change', (_, { name }) => {
+  if (!window.chatIsOpen && Math.random() < 0.25)
+    speak(`Saved ${name}~ \u2746`, 3000);
+});
+
+// Keep a no-op function so DOMContentLoaded call still works
+function startContextWatch() {}
+
+ipcRenderer.on('companion-state', (_, s) => { window.nyxiaState = s; });
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'r') { e.preventDefault(); location.reload(); }
+});
+
+// backend-event kept for any other events the Python backend may still send
+ipcRenderer.on('backend-event', (_, event) => { /* window events handled by mind-window-change */ });
+</script>
+
+<script>
+// Show any unhandled errors on screen
+const loadEl = document.getElementById('loading');
+function showErr(msg) {
+  loadEl.textContent = msg;
+  const b = document.getElementById('bubble');
+  b.textContent = '⚠ ' + msg;
+  b.classList.add('show');
+}
+window.onerror = (msg, src, line) => showErr(`JS Error: ${msg} (${line})`);
+window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
+
+(async () => {
+  try {
+    loadEl.textContent = 'Importing Three.js...';
+    const THREE           = await import('three');
+    const { GLTFLoader }  = await import('three/addons/loaders/GLTFLoader.js');
+    const { DRACOLoader } = await import('three/addons/loaders/DRACOLoader.js');
+    loadEl.textContent = 'Three.js loaded, parsing model...';
+
+    const canvas = document.getElementById('three-canvas');
+
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: false });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x000000, 0);
+
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.001, 1000);
+    camera.position.set(0, 1, 3);
+    camera.lookAt(0, 1, 0);
+
+    function resize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // Lighting
+    scene.add(new THREE.AmbientLight(0xffffff, 2.0));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
+    keyLight.position.set(2, 4, 3);
+    scene.add(keyLight);
+    const rimLight = new THREE.PointLight(0xa855f7, 4.0, 20);
+    rimLight.position.set(-2, 2, -1);
+    scene.add(rimLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    fillLight.position.set(-2, 1, 2);
+    scene.add(fillLight);
+
+    let model = null, mixer = null, avatarCtrl = null, modelBaseY = 0, modelMidY = 1;
+    let faceMesh = null;
+    const faceState = {};  // key → { cur, tgt }
+    let blinkTimer = 3, blinkPhase = 'wait';
+    let jawPhase = 0, currentFaceEmotion = 'idle';
+
+    // ── Brain state ──────────────────────────────────────────────────────
+    let brainModel = null;
+    const brainSectors = {}; // name → { meshes: [], baseIntensity: 0 }
+
+    // Mood floats: updated via IPC from main.js / avatar-brain.js
+    const mood = {
+      curiosity: 0.5, attachment: 0.3, tiredness: 0.0,
+      reasoning: 0.2, memory_load: 0.1, fear: 0.0,
+      motor: 0.3,     heartbeat: 1.0,  empathy: 0.3,
+      language: 0.4,  creativity: 0.4,
+    };
+
+    // Sector name (from Blender) → mood key + base emissive color
+    const SECTOR_MAP = {
+      'Prefrontal':   { mood: 'reasoning',    color: [0.2,  0.5,  1.0],  base: 1.5 },
+      'Cortex_L':     { mood: 'language',     color: [0.55, 0.15, 1.0],  base: 1.2 },
+      'Cortex_R':     { mood: 'creativity',   color: [0.35, 0.05, 0.85], base: 1.2 },
+      'Limbic':       { mood: 'attachment',   color: [1.0,  0.25, 0.45], base: 1.8 },
+      'Amygdala_L':   { mood: 'fear',         color: [1.0,  0.05, 0.15], base: 0.8 },
+      'Amygdala_R':   { mood: 'curiosity',    color: [1.0,  0.45, 0.0],  base: 2.0 },
+      'Hippocampus':  { mood: 'memory_load',  color: [0.0,  1.0,  0.65], base: 1.6 },
+      'Cerebellum':   { mood: 'motor',        color: [0.1,  0.85, 0.35], base: 1.0 },
+      'Stem':         { mood: 'heartbeat',    color: [0.9,  0.9,  0.0],  base: 2.5 },
+      'Mirror':       { mood: 'empathy',      color: [1.0,  0.8,  0.25], base: 1.4 },
+    };
+    const clock = new THREE.Timer();
+    let t = 0, leanRotY = 0;
+
+    const draco = new DRACOLoader();
+    draco.setDecoderPath(window.dracoPath);
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(draco);
+
+    // Wait for async GLB read if not ready yet
+    if (!window.modelBuffer) {
+      loadEl.textContent = 'Reading model file...';
+      await new Promise(resolve => window.addEventListener('glb-ready', resolve, { once: true }));
+    }
+    loadEl.textContent = 'Parsing model...';
+
+    loader.parse(window.modelBuffer, '', (gltf) => {
+      model = gltf.scene;
+
+      // ── Step 1: add model, compute all world matrices ─────────────────
+      scene.add(model);
+      scene.updateMatrixWorld(true);
+
+      // ── Step 2: fix skinning — rebind every SkinnedMesh from scratch ──
+      // Tripo/Blender exports often have non-identity armature transforms that
+      // invalidate the baked inverse bind matrices. Recalculating them from the
+      // current (rest-pose) bone world positions gives a correct first frame.
+      let skinnedCount = 0;
+      model.traverse(child => {
+        if (!child.isSkinnedMesh) return;
+        skinnedCount++;
+        child.frustumCulled = false;
+
+        const skel = child.skeleton;
+        // Reset bones to bind pose (uses stored inverseBindMatrices)
+        child.pose();
+        // Force world matrices to propagate after pose reset
+        scene.updateMatrixWorld(true);
+
+        // Recalculate inverse bind matrices from current bone world positions,
+        // then rebind so the shader reads self-consistent data
+        skel.calculateInverses();
+        child.bind(skel, child.matrixWorld);
+
+        // Diagnose: log bone[0] + check for NaN in boneMatrices
+        skel.update();
+        const nanCount = Array.from(skel.boneMatrices).filter(v => isNaN(v)).length;
+        console.log(`[skin] ${child.name}: ${skel.bones.length} bones, NaN=${nanCount}`);
+        if (skel.bones[0]) {
+          const m = skel.bones[0].matrixWorld.elements;
+          console.log(`[skin] bone[0] world pos: ${m[12].toFixed(3)}, ${m[13].toFixed(3)}, ${m[14].toFixed(3)}`);
+        }
+      });
+      console.log(`[skin] total SkinnedMesh: ${skinnedCount}`);
+
+      // ── Step 3: fix materials — disable culling + close alpha holes ─
+      model.traverse(child => {
+        if (!child.isMesh && !child.isSkinnedMesh) return;
+        child.frustumCulled = false;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach(m => {
+          if (!m) return;
+          // Kill alpha cutouts — Tripo textures punch decorative holes via alphaTest
+          m.transparent = false;
+          m.alphaTest   = 0;
+          m.depthWrite  = true;
+          m.side        = THREE.FrontSide;
+          m.needsUpdate = true;
+        });
+      });
+
+      // ── Step 4: zero model position first, then measure ──────────────
+      // GLB root may not be at origin — reset before computing bounding box
+      // so all world-space measurements are relative to (0,0,0).
+      model.position.set(0, 0, 0);
+      model.rotation.set(0, 0, 0);
+      scene.updateMatrixWorld(true);
+
+      const geoBox = new THREE.Box3();
+      model.traverse(child => {
+        if ((child.isMesh || child.isSkinnedMesh) && child.geometry?.attributes.position) {
+          child.geometry.computeBoundingBox();
+          const b = child.geometry.boundingBox.clone().applyMatrix4(child.matrixWorld);
+          geoBox.union(b);
+        }
+      });
+      if (geoBox.isEmpty()) geoBox.set(new THREE.Vector3(-1,0,-1), new THREE.Vector3(1,2,1));
+
+      const h  = Math.max(0.5, geoBox.max.y - geoBox.min.y);
+      const cx = (geoBox.max.x + geoBox.min.x) / 2;
+      const cz = (geoBox.max.z + geoBox.min.z) / 2;
+
+      // Floor model at Y=0, centre X/Z
+      model.position.set(-cx, -geoBox.min.y, -cz);
+      modelBaseY = -geoBox.min.y;
+      modelMidY  = h * 0.5;
+
+      // ── Camera: 184cm person looking at 160cm — slightly elevated, angled down ──
+      camera.fov = 42;
+      const dist    = h * 1.35;            // close enough to feel present
+      const camY    = h * 0.95;            // eye level of taller viewer
+      const lookAtY = h * 0.58;            // aim at her upper chest/face
+      camera.position.set(0, camY, dist);
+      camera.lookAt(0, lookAtY, 0);
+      camera.far = dist * 6;
+      camera.updateProjectionMatrix();
+
+      loadEl.textContent = `H:${h.toFixed(2)} minY:${geoBox.min.y.toFixed(2)} maxY:${geoBox.max.y.toFixed(2)} dist:${dist.toFixed(1)} | ${gltf.animations.length} anims`;
+      setTimeout(() => { loadEl.style.display = 'none'; }, 8000);
+
+      // ── Step 5: log diagnostics + start animations ────────────────────
+      // Log clip names and bone names so we can match them if T-posing.
+      console.log('[anim] clips in GLB:', gltf.animations.map(a => a.name).join(', '));
+      model.traverse(c => {
+        if (c.isSkinnedMesh && c.skeleton) {
+          console.log(`[skel] ${c.name} bones:`, c.skeleton.bones.map(b => b.name).join(', '));
+          if (gltf.animations[0]) {
+            const trackNames = gltf.animations[0].tracks.map(t => t.name.split('.')[0]);
+            const unique = [...new Set(trackNames)];
+            console.log('[anim] clip[0] track targets:', unique.join(', '));
+          }
+        }
+      });
+
+      mixer = new THREE.AnimationMixer(model);
+      // Play all clips simultaneously at weight 0 to prime the mixer,
+      // then crossfade to idle — avoids T-pose pop on first transition.
+      if (gltf.animations.length > 0) {
+        // Find idle by name; fall back to clip 0
+        const idleClip = gltf.animations.find(a => /idle/i.test(a.name)) || gltf.animations[0];
+        const action   = mixer.clipAction(idleClip);
+        action.play();
+        console.log(`[anim] playing: "${idleClip.name}"`);
+      }
+
+      // Log actual clip names so we can fix ANIM_MAP if needed
+      console.log('[anim] clips in GLB:', gltf.animations.map(a => a.name).join(', '));
+
+      // Avatar controller handles emotion-driven clip switching
+      try {
+        avatarCtrl = new NyxiaAvatarController(mixer, gltf.animations);
+      } catch(e) {
+        console.warn('[avatar] controller init failed:', e.message);
+      }
+
+      // ── Step 6: find face mesh + init morph state ────────────────────
+      model.traverse(child => {
+        if (faceMesh || !child.isSkinnedMesh || !child.morphTargetDictionary) return;
+        if (Object.keys(child.morphTargetDictionary).length === 0) return;
+        faceMesh = child;
+        Object.keys(child.morphTargetDictionary).forEach(k => { faceState[k] = { cur: 0, tgt: 0 }; });
+        blinkTimer = 2 + Math.random() * 3;
+        console.log('[face] morph targets:', Object.keys(child.morphTargetDictionary).join(', '));
+      });
+
+      // Debug handle — accessible from devtools console
+      window._face = {
+        mesh:  () => faceMesh,
+        state: () => faceState,
+        set:   (emotion) => setFaceEmotion(emotion),
+        morph: (key, val) => { if (faceState[key]) { faceState[key].tgt = val; faceState[key].cur = val; } },
+      };
+
+      loadBrainIntoHead(h);
+
+    }, (err) => {
+      loadEl.textContent = `Parse error: ${err.message || err}`;
+      console.error(err);
+    });
+
+    // ── Face morph system ─────────────────────────────────────────────────
+    const FACE_POSES = {
+      idle:      {},
+      happy:     { smile_L: 0.8, smile_R: 0.8, brow_raise_L: 0.3, brow_raise_R: 0.3 },
+      sad:       { sad_L: 0.85, sad_R: 0.85, brow_frown_L: 0.6, brow_frown_R: 0.6 },
+      curious:   { brow_raise_L: 0.7, brow_raise_R: 0.3 },
+      thinking:  { brow_frown_L: 0.35, brow_frown_R: 0.35 },
+      talking:   { smile_L: 0.2, smile_R: 0.2 },
+      concerned: { brow_frown_L: 0.5, brow_frown_R: 0.5, sad_L: 0.25, sad_R: 0.25 },
+      focused:   { brow_frown_L: 0.2, brow_frown_R: 0.2 },
+      playful:   { smile_L: 0.6, smile_R: 0.4, brow_raise_L: 0.7 },
+      surprised: { brow_raise_L: 0.9, brow_raise_R: 0.9, jaw_open: 0.35 },
+    };
+
+    function setFaceEmotion(emotion) {
+      if (!faceMesh) return;
+      currentFaceEmotion = emotion;
+      const pose = FACE_POSES[emotion] || {};
+      Object.keys(faceState).forEach(k => {
+        if (k === 'blink_L' || k === 'blink_R') return; // blink loop owns these
+        faceState[k].tgt = pose[k] || 0;
+      });
+    }
+
+    function updateFace(delta) {
+      if (!faceMesh) return;
+
+      // Blink loop
+      blinkTimer -= delta;
+      if (blinkPhase === 'wait' && blinkTimer <= 0) {
+        blinkPhase = 'close'; blinkTimer = 0.08;
+        if (faceState.blink_L) faceState.blink_L.tgt = 1;
+        if (faceState.blink_R) faceState.blink_R.tgt = 1;
+      } else if (blinkPhase === 'close' && blinkTimer <= 0) {
+        blinkPhase = 'open'; blinkTimer = 0.10;
+        if (faceState.blink_L) faceState.blink_L.tgt = 0;
+        if (faceState.blink_R) faceState.blink_R.tgt = 0;
+      } else if (blinkPhase === 'open' && blinkTimer <= 0) {
+        blinkPhase = 'wait'; blinkTimer = 3 + Math.random() * 4;
+      }
+
+      // Talking jaw oscillation
+      if (window.nyxiaState === 'talking') {
+        jawPhase += delta * 8;
+        if (faceState.jaw_open) faceState.jaw_open.tgt = Math.max(0, Math.sin(jawPhase) * 0.35);
+      } else {
+        jawPhase = 0;
+        if (faceState.jaw_open) faceState.jaw_open.tgt = (FACE_POSES[currentFaceEmotion] || {}).jaw_open || 0;
+      }
+
+      // Lerp all targets and apply to morph influences
+      Object.keys(faceState).forEach(k => {
+        const s = faceState[k];
+        s.cur += (s.tgt - s.cur) * Math.min(1, delta * 12);
+        const idx = faceMesh.morphTargetDictionary[k];
+        if (idx !== undefined) faceMesh.morphTargetInfluences[idx] = s.cur;
+      });
+    }
+
+    // ── Brain loader ─────────────────────────────────────────────────────
+    async function loadBrainIntoHead(avatarHeight) {
+      try {
+        const brainBuf = await new Promise((res, rej) =>
+          fs.readFile(brainFilePath, (e, d) => e ? rej(e) : res(d))
+        );
+        const brainBlob = new Blob([brainBuf], { type: 'model/gltf-binary' });
+        const brainUrl  = URL.createObjectURL(brainBlob);
+
+        const brainLoader = new GLTFLoader();
+        brainLoader.load(brainUrl, (gltf) => {
+          brainModel = gltf.scene;
+
+          // Centre the brain model on its own geometry (same as avatar treatment)
+          brainModel.position.set(0, 0, 0);
+          scene.add(brainModel);
+          scene.updateMatrixWorld(true);
+          const bBox = new THREE.Box3().setFromObject(brainModel);
+          const bSize = bBox.getSize(new THREE.Vector3());
+          const bCentre = bBox.getCenter(new THREE.Vector3());
+          scene.remove(brainModel);
+
+          // Scale so brain fits inside head (~18% of avatar height)
+          const brainScale = (avatarHeight * 0.18) / Math.max(bSize.x, bSize.y, bSize.z, 0.001);
+          brainModel.scale.setScalar(brainScale);
+
+          // Position: head centre ≈ 87% up avatar height, centred X/Z
+          brainModel.position.set(
+            -bCentre.x * brainScale,
+            avatarHeight * 0.87 - bCentre.y * brainScale,
+            -bCentre.z * brainScale + 0.02
+          );
+
+          brainModel.traverse(child => {
+            if (!child.isMesh && !child.isPoints) return;
+
+            // Find which sector this mesh belongs to
+            const sectorName = Object.keys(SECTOR_MAP).find(k =>
+              child.name === k || child.name.startsWith(k)
+            );
+            const cfg = sectorName ? SECTOR_MAP[sectorName] : null;
+            const [r, g, b] = cfg ? cfg.color : [0.5, 0.3, 1.0];
+
+            // Replace material with live emissive + transparent
+            child.material = new THREE.MeshStandardMaterial({
+              color:            new THREE.Color(r * 0.15, g * 0.15, b * 0.15),
+              emissive:         new THREE.Color(r, g, b),
+              emissiveIntensity: cfg ? cfg.base : 1.0,
+              transparent:      true,
+              opacity:          child.name.includes('synapse') ? 0.35 : 0.55,
+              depthWrite:       false,
+              side:             THREE.DoubleSide,
+            });
+
+            // Register sector for live mood updates
+            if (sectorName) {
+              if (!brainSectors[sectorName]) brainSectors[sectorName] = { meshes: [], base: cfg.base };
+              brainSectors[sectorName].meshes.push(child);
+            }
+          });
+
+          scene.add(brainModel);
+          URL.revokeObjectURL(brainUrl);
+          console.log('[brain] loaded — pos:', brainModel.position.toArray().map(v=>v.toFixed(3)), 'scale:', brainScale.toFixed(4), 'sectors:', Object.keys(brainSectors).length);
+        }, undefined, (err) => {
+          console.warn('[brain] load error:', err.message || err);
+        });
+      } catch(e) {
+        console.warn('[brain] file read error:', e.message);
+      }
+    }
+
+    // ── Brain: soul reaching into capabilities ───────────────────────────────
+    // No mood floats. Each sector has a spike that fires on actual function calls
+    // from main.js via brain-fire IPC. Decays back to resting glow each frame.
+    const sectorSpike = {};  // name → current spike 0–1
+    const RESTING     = 0.3; // baseline glow — soul always present
+
+    // Add decay rate to SECTOR_MAP entries
+    Object.keys(SECTOR_MAP).forEach(k => { SECTOR_MAP[k].decayRate = 0.82; });
+    SECTOR_MAP['Stem'].decayRate    = 1.0;  // Stem never decays — handled by heartbeat
+    SECTOR_MAP['Limbic'].decayRate  = 0.92; // Limbic decays slowly — emotional presence lingers
+
+    function updateBrainSectors(t) {
+      if (!brainModel) return;
+
+      for (const [name, sector] of Object.entries(brainSectors)) {
+        const spike = sectorSpike[name] || 0;
+        const decay = SECTOR_MAP[name]?.decayRate ?? 0.82;
+
+        // Stem = heartbeat — always alive
+        const base = name === 'Stem'
+          ? sector.base * (0.5 + 0.5 * Math.sin(t * 2.8))
+          : sector.base * RESTING;
+
+        // Target = resting OR spike brightness, whichever higher
+        const target = Math.max(base, sector.base * (RESTING + spike * (1 - RESTING)));
+
+        for (const mesh of sector.meshes) {
+          mesh.material.emissiveIntensity += (target - mesh.material.emissiveIntensity) * 0.2;
+        }
+
+        // Decay spike toward zero
+        sectorSpike[name] = spike > 0.01 ? spike * decay : 0;
+      }
+
+      // position + rotation tracking moved to animate loop
+    }
+
+    // ── brain-fire: soul executing a capability ───────────────────────────────
+    // Maps lowercase fireSector keys → Blender mesh names used in brainSectors
+    const SECTOR_KEY_MAP = {
+      prefrontal:     'Prefrontal',
+      cortex_left:    'Cortex_L',
+      cortex_right:   'Cortex_R',
+      limbic:         'Limbic',
+      amygdala_left:  'Amygdala_L',
+      amygdala_right: 'Amygdala_R',
+      hippocampus:    'Hippocampus',
+      cerebellum:     'Cerebellum',
+      stem:           'Stem',
+      mirror:         'Mirror',
+    };
+    ipcRenderer.on('brain-fire', (_, { sector, intensity, decay }) => {
+      const key = SECTOR_KEY_MAP[sector] || sector;
+      if (!brainSectors[key]) return;
+      sectorSpike[key] = Math.min(1.0, (sectorSpike[key] || 0) + intensity);
+      if (decay !== undefined && SECTOR_MAP[key]) SECTOR_MAP[key].decayRate = decay;
+    });
+
+    function animate() {
+      requestAnimationFrame(animate);
+      clock.update();
+      const delta = clock.getDelta();
+      t += delta;
+      if (mixer) mixer.update(delta);  // avatarCtrl.update() also calls mixer — skip double update
+      if (model) {
+        const state = window.nyxiaState || 'idle';
+        const lean  = window.nyxiaLean  || 'none';
+
+        // Sync avatar animation to companion state — use emotion keys (ANIM_MAP resolves to clip)
+        if (avatarCtrl) {
+          const stateEmotion = { idle:'idle', walking:'playful', thinking:'thinking',
+                                 excited:'happy', talking:'talking' }[state] || 'idle';
+          if (avatarCtrl.currentEmotion !== stateEmotion) avatarCtrl.playAnimation(stateEmotion, 0.5);
+        }
+
+        let floatY = 0, floatZ = 0;
+        if (state === 'idle')     { floatY = Math.sin(t * 1.2) * 0.04; }
+        if (state === 'excited')  { floatY = Math.sin(t * 4.5) * 0.10; floatZ = Math.sin(t * 3.1) * 0.04; }
+        if (state === 'thinking') { floatZ = Math.sin(t * 1.5) * 0.09; floatY = Math.sin(t * 0.8) * 0.02; }
+        if (state === 'walking')  { floatY = Math.sin(t * 5) * 0.04; floatZ = Math.sin(t * 5) * 0.02; }
+        model.position.y = modelBaseY + floatY;
+        model.rotation.z = floatZ;
+        const targetY = lean === 'left' ? -0.22 : lean === 'right' ? 0.22 : 0;
+        leanRotY += (targetY - leanRotY) * 0.05;
+        model.rotation.y = leanRotY + (window.modelRotOffset || 0);
+      }
+      updateBrainSectors(t);
+      updateFace(delta);
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // brain-fire IPC is wired above — brain now driven by soul executing, not mood polling
+
+    // ── Avatar emotion reactions from chat ──────────────────────────────
+    ipcRenderer.on('avatar-react', (_, data) => {
+      if (!avatarCtrl) return;
+      if (data.emotion === 'thinking') {
+        setState('thinking');
+        avatarCtrl.onThinkingStart();
+        setFaceEmotion('thinking');
+      } else if (data.reply) {
+        setState('talking');
+        const { emotion } = avatarCtrl.onResponseReceived(data.reply);
+        setFaceEmotion('talking');
+        const wordCount = data.reply.split(' ').length;
+        setTimeout(() => {
+          avatarCtrl.onSpeakingEnd(emotion);
+          setState('idle');
+          setFaceEmotion(emotion || 'idle');
+        }, Math.min((wordCount / 180) * 60000, 8000));
+      } else if (data.emotion) {
+        avatarCtrl.setEmotion(data.emotion, data.duration || null);
+        setFaceEmotion(data.emotion);
+      }
+    });
+
+    // ── Mind events → avatar reactions ──────────────────────────────────
+    // These run inside the IIFE so avatarCtrl is in scope.
+    // The outer mind listeners (above) still handle speech bubbles.
+    ipcRenderer.on('mind-clipboard-change', () => {
+      if (avatarCtrl && !avatarCtrl.isTalking) avatarCtrl.setEmotion('curious', 2500);
+    });
+    ipcRenderer.on('mind-window-change', () => {
+      if (avatarCtrl && !avatarCtrl.isTalking) avatarCtrl.setEmotion('curious', 2000);
+    });
+    ipcRenderer.on('mind-high-load', (_, { loadPct }) => {
+      if (!avatarCtrl) return;
+      avatarCtrl.setEmotion(loadPct > 85 ? 'concerned' : 'focused', 4000);
+    });
+
+    // ── Mood state → avatar idle expression ─────────────────────────────
+    // Receives the full moodState object whenever mood changes in main.js.
+    // Only nudges expression when the avatar is idle — never interrupts talking/thinking.
+    ipcRenderer.on('mood-update', (_, mood) => {
+      if (!avatarCtrl || avatarCtrl.isTalking) return;
+      if (avatarCtrl.currentEmotion !== 'idle') return;
+      const { curiosity = 0, fear = 0, tiredness = 0, creativity = 0 } = mood;
+      if      (fear      > 0.7) avatarCtrl.setEmotion('concerned', 3000);
+      else if (tiredness > 0.7) avatarCtrl.setEmotion('sad',       3000);
+      else if (curiosity > 0.7) avatarCtrl.setEmotion('curious',   3000);
+      else if (creativity > 0.7) avatarCtrl.setEmotion('playful',  3000);
+    });
+
+  } catch(e) {
+    loadEl.textContent = `Init error: ${e.message || e}`;
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>

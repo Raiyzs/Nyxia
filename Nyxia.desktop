@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Nyxia
+Comment=Your elegant desktop AI companion
+Exec=bash /var/home/kvoldnes/nyxia/launch.sh
+Icon=/var/home/kvoldnes/nyxia/assets/icon.png
+Terminal=false
+Categories=Utility;
+StartupWMClass=nyxia-companion

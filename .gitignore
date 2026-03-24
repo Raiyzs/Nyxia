@@ -1,0 +1,50 @@
+# Hemmeligheter
+.env
+.env.local
+*.key
+*.secret
+
+# Config med nøkler (lagres utenfor prosjektet i ~/.config/Nyxia/)
+# Ikke legg til config-filer med keys her
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+xtts-env/
+
+# OS-greier
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+package-lock.json
+
+# 3D-modeller (store binærfiler)
+3d avatar/
+brain 3d/
+
+# Lokal konfig og intern data
+.mcp.json
+.planning/
+.claude/
+
+# Personlighet/modell-definisjon (del ikke offentlig)
+Nyxia.modelfile
+
+# Intern dokumentasjon
+commands.txt
+COMPARE.md
+AVATAR-STEPS.txt
+docs/
+
+# Merkelig mappe fra tidlig oppsett
+{src,assets,backend,docs}/
+
+# Logger og temp
+*.log
+/tmp/
+voicetrainer/xtts_ft/
+blender_scripts/

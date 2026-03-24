@@ -1,0 +1,54 @@
+{
+  "name": "nyxia-companion",
+  "version": "1.0.0",
+  "description": "Nyxia — Your elegant desktop AI companion",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --linux",
+    "build-appimage": "electron-builder --linux AppImage",
+    "build-deb": "electron-builder --linux deb"
+  },
+  "build": {
+    "appId": "com.nyxia.companion",
+    "productName": "Nyxia",
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "maintainer": "You"
+    },
+    "files": [
+      "src/**/*",
+      "backend/**/*",
+      "assets/**/*"
+    ]
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "keywords": [
+    "desktop",
+    "companion",
+    "ai",
+    "electron"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "chokidar": "^3.6.0",
+    "chromadb": "^3.3.3",
+    "dbus-next": "^0.10.2",
+    "kuzu": "^0.11.3",
+    "node-pty": "^1.1.0",
+    "playwright": "^1.58.2",
+    "three": "^0.183.2",
+    "vectordb": "^0.21.2",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  }
+}

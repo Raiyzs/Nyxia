@@ -1,0 +1,1760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nyxia Chat</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: transparent !important;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    font-family: 'DM Sans', sans-serif;
+    display: flex; flex-direction: column;
+  }
+
+  #panel {
+    width: 100%; height: 100%;
+    background: rgba(8,3,18,0.96);
+    border: 1px solid rgba(168,85,247,0.4);
+    border-radius: 18px;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    backdrop-filter: blur(16px);
+    box-shadow: 0 0 40px rgba(168,85,247,0.15);
+  }
+  /* When embedded in the chat overlay — let the overlay provide border/bg */
+  .overlay-mode #panel {
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  /* Header */
+  #header {
+    background: rgba(124,58,237,0.15);
+    border-bottom: 1px solid rgba(168,85,247,0.25);
+    padding: 10px 14px;
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: grab; flex-shrink: 0;
+  }
+  #header:active { cursor: grabbing; }
+  #header-title {
+    font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 800;
+    color: #c084fc; letter-spacing: 2px; text-transform: uppercase;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .title-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(74,222,128,0.4)} 50%{box-shadow:0 0 0 5px rgba(74,222,128,0)} }
+  .header-btns { display: flex; gap: 6px; }
+  .hbtn {
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+    color: #6b5f7a; cursor: pointer; font-size: 13px;
+    width: 28px; height: 28px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+  }
+  .hbtn:hover { color: #c084fc; border-color: rgba(168,85,247,0.5); background: rgba(168,85,247,0.1); }
+  .hbtn.active { color: #c084fc; border-color: rgba(168,85,247,0.5); background: rgba(168,85,247,0.15); }
+
+  /* Views */
+  #chat-view, #settings-view {
+    flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  }
+  #settings-view { display: none; }
+
+  /* Messages */
+  #messages {
+    flex: 1; overflow-y: auto; padding: 12px;
+    display: flex; flex-direction: column; gap: 10px; min-height: 0;
+  }
+  #messages::-webkit-scrollbar { width: 3px; }
+  #messages::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.3); border-radius: 2px; }
+
+  .msg { padding: 9px 13px; border-radius: 12px; font-size: 13px; line-height: 1.6; max-width: 85%; animation: msgIn 0.25s cubic-bezier(.34,1.56,.64,1); }
+  @keyframes msgIn { from{transform:translateY(8px) scale(0.95);opacity:0} to{transform:translateY(0) scale(1);opacity:1} }
+  .msg.nyxia {
+    background: linear-gradient(135deg, rgba(168,85,247,0.18) 0%, rgba(0,212,255,0.09) 100%);
+    border: 1px solid rgba(168,85,247,0.28);
+    color: #e2d4f5; align-self: flex-start; border-bottom-left-radius: 4px;
+  }
+  .msg.user {
+    background: linear-gradient(135deg, rgba(0,212,255,0.15) 0%, rgba(168,85,247,0.09) 100%);
+    border: 1px solid rgba(0,212,255,0.22);
+    color: #d4edf5; align-self: flex-end; border-bottom-right-radius: 4px;
+  }
+  .msg-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; opacity: 0.5; }
+  .msg.nyxia .msg-label { color: #c084fc; }
+  .msg.user .msg-label { color: #38bdf8; text-align: right; }
+  .typing-dots { display:flex; gap:3px; padding:4px 0; align-items:center; }
+  .typing-dot { width:5px; height:5px; border-radius:50%; background:#c084fc; animation:typeDot 1.2s ease-in-out infinite; opacity:0.4; }
+  .typing-dot:nth-child(2){animation-delay:0.2s} .typing-dot:nth-child(3){animation-delay:0.4s}
+  @keyframes typeDot { 0%,60%,100%{transform:translateY(0);opacity:0.4} 30%{transform:translateY(-5px);opacity:1} }
+  .msg-feedback { display:flex; align-items:center; gap:6px; margin-top:5px; }
+  .msg-thumbdown {
+    background:none; border:none; cursor:pointer; font-size:11px; opacity:0.25;
+    padding:0; line-height:1; transition:opacity 0.2s;
+  }
+  .msg-thumbdown:hover { opacity:0.7; }
+  .msg-correction-wrap { display:none; gap:5px; align-items:center; margin-top:6px; }
+  .msg-correction-wrap.open { display:flex; }
+  .msg-correction-input {
+    flex:1; background:rgba(255,80,80,0.06); border:1px solid rgba(248,113,113,0.25);
+    border-radius:6px; padding:5px 9px; color:#f0d0d0;
+    font-family:'DM Sans',sans-serif; font-size:11px; outline:none;
+  }
+  .msg-correction-input:focus { border-color:rgba(248,113,113,0.5); }
+  .msg-correction-input::placeholder { color:rgba(248,113,113,0.3); }
+  .msg-correction-send {
+    background:rgba(248,113,113,0.12); border:1px solid rgba(248,113,113,0.3);
+    border-radius:6px; color:#f87171; cursor:pointer; font-size:11px;
+    padding:4px 9px; white-space:nowrap; transition:all 0.2s;
+  }
+  .msg-correction-send:hover { background:rgba(248,113,113,0.22); }
+
+  /* Input */
+  #input-row {
+    padding: 10px 12px; border-top: 1px solid rgba(168,85,247,0.2);
+    display: flex; gap: 8px; align-items: center; flex-shrink: 0;
+    background: rgba(168,85,247,0.04);
+  }
+  #chat-input {
+    flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(168,85,247,0.25);
+    border-radius: 12px; padding: 10px 14px; color: #e8d5ff;
+    font-family: 'DM Sans', sans-serif; font-size: 13px; outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s; height: 42px;
+  }
+  #chat-input:focus { border-color: rgba(168,85,247,0.6); box-shadow: 0 0 0 3px rgba(168,85,247,0.1); }
+  #chat-input::placeholder { color: #4a3a5a; }
+  #send-btn {
+    width: 42px; height: 42px; background: linear-gradient(135deg, #7c3aed, #c084fc);
+    border: none; border-radius: 12px; color: white; cursor: pointer; font-size: 16px;
+    transition: all 0.2s; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 10px rgba(124,58,237,0.4); flex-shrink: 0;
+  }
+  #send-btn:hover { transform: scale(1.07); box-shadow: 0 4px 18px rgba(168,85,247,0.6); }
+  #mic-btn {
+    width: 42px; height: 42px; background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(168,85,247,0.3); border-radius: 12px; color: #6b5f7a;
+    cursor: pointer; font-size: 16px; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  #mic-btn:hover { color: #c084fc; border-color: rgba(168,85,247,0.6); background: rgba(168,85,247,0.1); }
+  #mic-btn.listening {
+    color: #f87171; border-color: rgba(248,113,113,0.6);
+    background: rgba(248,113,113,0.1);
+  }
+  #live-btn {
+    width: 42px; height: 42px; background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(168,85,247,0.3); border-radius: 12px; color: #6b5f7a;
+    cursor: pointer; font-size: 15px; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  #live-btn:hover { color: #c084fc; border-color: rgba(168,85,247,0.6); background: rgba(168,85,247,0.1); }
+  #live-btn.listening {
+    color: #c084fc; border-color: rgba(168,85,247,0.8);
+    background: rgba(168,85,247,0.12);
+    box-shadow: 0 0 10px rgba(168,85,247,0.25);
+    animation: livePulse 2s ease-in-out infinite;
+  }
+  #live-btn.speaking {
+    color: #f87171; border-color: rgba(248,113,113,0.6);
+    background: rgba(248,113,113,0.1);
+    animation: none;
+  }
+  @keyframes livePulse { 0%,100%{box-shadow:0 0 6px rgba(168,85,247,0.2)} 50%{box-shadow:0 0 16px rgba(168,85,247,0.5)} }
+  #mic-level {
+    display: none;
+    align-items: flex-end;
+    gap: 2px;
+    height: 20px;
+    padding: 0 4px;
+  }
+  #mic-level.active { display: flex; }
+  #mic-level span {
+    display: block;
+    width: 3px;
+    border-radius: 2px;
+    background: #f87171;
+    min-height: 3px;
+    transition: height 0.05s ease;
+  }
+
+  /* ── Settings Panel ── */
+  #settings-view {
+    overflow-y: auto; padding: 14px; gap: 12px;
+  }
+  #settings-view::-webkit-scrollbar { width: 3px; }
+  #settings-view::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.3); border-radius: 2px; }
+
+  .s-section {
+    background: rgba(124,58,237,0.06);
+    border: 1px solid rgba(168,85,247,0.2);
+    border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .s-label {
+    font-family: 'Syne', sans-serif; font-size: 10px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 1.5px; color: #c084fc; margin-bottom: 2px;
+  }
+  .s-input, .s-textarea {
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(168,85,247,0.2);
+    border-radius: 8px; padding: 8px 12px; color: #e8d5ff;
+    font-family: 'DM Sans', sans-serif; font-size: 12px; outline: none;
+    width: 100%; transition: border-color 0.2s;
+  }
+  .s-input:focus, .s-textarea:focus { border-color: rgba(168,85,247,0.5); }
+  .s-textarea { resize: vertical; min-height: 60px; }
+  .s-textarea.s-single { min-height: 36px; max-height: 300px; height: 36px; }
+  .s-hint { font-size: 11px; color: #5a4a6a; }
+  .s-row { display: flex; gap: 8px; }
+
+  #save-btn {
+    background: linear-gradient(135deg, #7c3aed, #c084fc);
+    border: none; border-radius: 10px; color: white; cursor: pointer;
+    padding: 10px 20px; font-family: 'Syne', sans-serif; font-size: 12px;
+    font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
+    transition: all 0.2s; width: 100%;
+    box-shadow: 0 2px 12px rgba(124,58,237,0.4);
+  }
+  #save-btn:hover { transform: scale(1.02); box-shadow: 0 4px 18px rgba(168,85,247,0.5); }
+  #save-confirm {
+    text-align: center; font-size: 12px; color: #4ade80;
+    opacity: 0; transition: opacity 0.3s; padding: 4px;
+  }
+  #save-confirm.show { opacity: 1; }
+
+  /* ── System Panel (Solo Leveling aesthetic) ── */
+  #system-view {
+    display: none; flex: 1; flex-direction: column;
+    overflow-y: auto; padding: 10px; gap: 8px;
+    background: rgba(0,6,18,0.5);
+    min-height: 0;
+  }
+  #system-view::-webkit-scrollbar { width: 3px; }
+  #system-view::-webkit-scrollbar-thumb { background: rgba(0,180,255,0.3); border-radius: 2px; }
+
+  .sys-panel {
+    background: rgba(0,16,40,0.7);
+    border: 1px solid rgba(0,180,255,0.28);
+    border-radius: 4px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 7px;
+    box-shadow: 0 0 14px rgba(0,150,255,0.07), inset 0 0 20px rgba(0,80,180,0.03);
+  }
+  .sys-panel-title {
+    font-family: 'Syne', monospace; font-size: 8px; font-weight: 800;
+    letter-spacing: 2.5px; text-transform: uppercase; color: #00d4ff;
+    border-bottom: 1px solid rgba(0,180,255,0.18); padding-bottom: 6px;
+    text-shadow: 0 0 8px rgba(0,212,255,0.5);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .sys-row { display: flex; align-items: center; gap: 10px; }
+  .sys-lbl {
+    font-size: 8px; letter-spacing: 1.5px; color: rgba(0,212,255,0.45);
+    min-width: 46px; text-transform: uppercase;
+  }
+  .sys-val { font-size: 12px; color: #e0f0ff; }
+  .sys-title-val { color: #a78bfa; font-style: italic; font-size: 11px; }
+  .sys-level-num {
+    font-family: 'Syne', sans-serif; font-size: 24px; font-weight: 800;
+    color: #00d4ff; text-shadow: 0 0 14px rgba(0,212,255,0.6);
+    line-height: 1; min-width: 32px;
+  }
+  .sys-xp-wrap { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .sys-bar { height: 5px; background: rgba(0,180,255,0.1); border: 1px solid rgba(0,180,255,0.18); border-radius: 2px; overflow: hidden; }
+  .sys-bar-fill { height: 100%; border-radius: 2px; transition: width 0.7s ease; }
+  .sys-xp-fill { background: linear-gradient(90deg, #0047ab, #00d4ff); box-shadow: 0 0 6px rgba(0,212,255,0.4); }
+  .sys-xp-hint { font-size: 8px; color: rgba(0,212,255,0.4); letter-spacing: 1px; }
+
+  .sys-growth-block { display: flex; flex-direction: column; gap: 4px; }
+  .sys-growth-label { display: flex; justify-content: space-between; align-items: center; }
+  .sys-growth-name  { font-size: 7px; letter-spacing: 2px; color: rgba(0,212,255,0.5); text-transform: uppercase; }
+  .sys-growth-stage { font-size: 9px; color: #c084fc; letter-spacing: 1px; font-style: italic; }
+  .sys-growth-bar   { height: 8px !important; }
+  .sys-growth-learn-fill { background: linear-gradient(90deg, #7c3aed, #e879f9); box-shadow: 0 0 8px rgba(168,85,247,0.5); }
+  .sys-growth-indie-fill { background: linear-gradient(90deg, #0891b2, #67e8f9); box-shadow: 0 0 8px rgba(103,232,249,0.4); }
+  .sys-growth-hint  { font-size: 8px; color: rgba(168,85,247,0.35); text-align: right; }
+
+  .sys-stat-row { display: flex; align-items: center; gap: 8px; }
+  .sys-stat-name { font-size: 8px; letter-spacing: 1.5px; color: rgba(0,212,255,0.55); min-width: 28px; text-transform: uppercase; }
+  .sys-stat-val { font-size: 10px; color: #8ab4f8; min-width: 20px; text-align: right; }
+
+  .sys-quest-item { display: flex; align-items: center; gap: 7px; padding: 4px 0; border-bottom: 1px solid rgba(0,180,255,0.07); }
+  .sys-quest-check {
+    width: 14px; height: 14px; border: 1px solid rgba(0,212,255,0.35); border-radius: 2px;
+    cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: #00d4ff; transition: all 0.2s;
+  }
+  .sys-quest-check.done { background: rgba(0,212,255,0.12); border-color: rgba(0,212,255,0.6); }
+  .sys-quest-txt { flex: 1; font-size: 11px; color: #c8e8ff; transition: all 0.2s; }
+  .sys-quest-txt.done { color: rgba(0,212,255,0.3); text-decoration: line-through; }
+  .sys-quest-del { color: rgba(255,100,100,0.25); cursor: pointer; font-size: 11px; padding: 0 2px; transition: color 0.2s; }
+  .sys-quest-del:hover { color: rgba(255,100,100,0.8); }
+
+  .sys-quest-add { display: flex; gap: 6px; margin-top: 2px; }
+  .sys-input {
+    flex: 1; background: rgba(0,16,40,0.9); border: 1px solid rgba(0,180,255,0.18);
+    border-radius: 3px; padding: 5px 8px; color: #c8e8ff;
+    font-family: 'DM Sans', sans-serif; font-size: 11px; outline: none;
+  }
+  .sys-input:focus { border-color: rgba(0,212,255,0.45); }
+  .sys-input::placeholder { color: rgba(0,150,200,0.3); }
+  .sys-addbtn {
+    width: 26px; height: 26px; background: rgba(0,180,255,0.08);
+    border: 1px solid rgba(0,180,255,0.28); border-radius: 3px;
+    color: #00d4ff; cursor: pointer; font-size: 16px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; transition: all 0.2s;
+  }
+  .sys-addbtn:hover { background: rgba(0,180,255,0.18); }
+  #sys-penalty { font-size: 9px; color: #f87171; letter-spacing: 1px; padding: 2px 0; animation: sysPulse 2s infinite; }
+  @keyframes sysPulse { 0%,100%{opacity:0.5} 50%{opacity:1} }
+
+  .sys-abilities { display: flex; flex-wrap: wrap; gap: 5px; }
+  .sys-ability {
+    background: rgba(0,20,50,0.8); border: 1px solid rgba(0,180,255,0.22);
+    border-radius: 3px; color: #7ab4e8; cursor: pointer;
+    font-family: 'DM Sans', sans-serif; font-size: 10px;
+    padding: 4px 9px; transition: all 0.2s;
+  }
+  .sys-ability:hover { background: rgba(0,80,180,0.25); border-color: rgba(0,212,255,0.5); color: #00d4ff; }
+  .sys-notify {
+    font-size: 10px; color: #00d4ff; text-align: center; padding: 4px;
+    letter-spacing: 1px; opacity: 0; transition: opacity 0.4s;
+  }
+  .sys-notify.show { opacity: 1; }
+</style>
+</head>
+<body>
+<script>
+  if (new URLSearchParams(location.search).get('overlay') === '1')
+    document.documentElement.classList.add('overlay-mode');
+</script>
+<div id="panel">
+  <div id="header">
+    <div id="header-title"><div class="title-dot"></div>✦ NYXIA<span id="learn-dot" title="Learning..." style="display:none;width:6px;height:6px;border-radius:50%;background:#a78bfa;margin-left:6px;opacity:0.7;animation:pulse 1.5s infinite;flex-shrink:0"></span></div>
+    <div class="header-btns">
+      <button class="hbtn" id="system-btn" onclick="toggleSystem()" title="System">◈</button>
+      <button class="hbtn" id="settings-btn" onclick="toggleSettings()" title="Personality">⚙</button>
+      <button class="hbtn" onclick="closeChat()" title="Close">✕</button>
+    </div>
+  </div>
+
+  <!-- Chat view -->
+  <div id="chat-view">
+    <div id="messages"></div>
+    <div id="input-row">
+      <input id="chat-input" placeholder="Speak to me..." onkeydown="handleKey(event)"/>
+      <div id="mic-level"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+      <button id="mic-btn" onclick="toggleMic()" title="Push to talk">🎤</button>
+      <button id="live-btn" onclick="toggleVoiceMode()" title="Always-on voice mode">◎</button>
+      <button id="send-btn" onclick="sendMessage()">↑</button>
+    </div>
+  </div>
+
+  <!-- System view (Solo Leveling inspired) -->
+  <div id="system-view">
+    <div class="sys-panel">
+      <div class="sys-panel-title">◈ STATUS WINDOW</div>
+      <div class="sys-row">
+        <span class="sys-lbl">Brain</span>
+        <span id="sys-ollama-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#ef4444;margin-right:5px;vertical-align:middle"></span>
+        <span id="sys-ollama-val" class="sys-val" style="font-size:10px">—</span>
+        <button id="sys-ollama-restart" onclick="restartOllama()" title="Restart Ollama" style="margin-left:auto;background:none;border:1px solid rgba(168,85,247,0.3);border-radius:4px;color:rgba(168,85,247,0.7);font-size:9px;padding:1px 5px;cursor:pointer;display:none">↺</button>
+      </div>
+      <div class="sys-row"><span class="sys-lbl">Model</span><span id="sys-model-val" class="sys-val" style="font-size:10px">—</span></div>
+      <div class="sys-row">
+        <span class="sys-lbl">Voice</span>
+        <span id="sys-chatterbox-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#ef4444;margin-right:5px;vertical-align:middle"></span>
+        <span id="sys-chatterbox-val" class="sys-val" style="font-size:10px">—</span>
+      </div>
+      <div class="sys-row"><span class="sys-lbl">Player</span><span id="sys-player" class="sys-val">—</span></div>
+      <div class="sys-row"><span class="sys-lbl">Title</span><span id="sys-title-val" class="sys-title-val">Newcomer</span></div>
+      <div class="sys-row">
+        <span class="sys-level-num" id="sys-level">1</span>
+        <div class="sys-xp-wrap">
+          <div class="sys-bar"><div id="sys-xp-fill" class="sys-bar-fill sys-xp-fill" style="width:0%"></div></div>
+          <span id="sys-xp-hint" class="sys-xp-hint">0 / 100 XP</span>
+        </div>
+      </div>
+      <div id="sys-notify" class="sys-notify"></div>
+    </div>
+
+    <div class="sys-panel">
+      <div class="sys-panel-title">◈ NYXIA GROWTH</div>
+      <div class="sys-growth-block">
+        <div class="sys-growth-label">
+          <span class="sys-growth-name">Learning Stage</span>
+          <span class="sys-growth-stage" id="growth-learn-stage">—</span>
+        </div>
+        <div class="sys-bar sys-growth-bar">
+          <div class="sys-bar-fill sys-growth-learn-fill" id="growth-learn-fill" style="width:0%"></div>
+        </div>
+        <div class="sys-growth-hint" id="growth-learn-hint"></div>
+      </div>
+      <div class="sys-growth-block">
+        <div class="sys-growth-label">
+          <span class="sys-growth-name">Independence Stage</span>
+          <span class="sys-growth-stage" id="growth-indie-stage">—</span>
+        </div>
+        <div class="sys-bar sys-growth-bar">
+          <div class="sys-bar-fill sys-growth-indie-fill" id="growth-indie-fill" style="width:0%"></div>
+        </div>
+        <div class="sys-growth-hint" id="growth-indie-hint"></div>
+      </div>
+    </div>
+
+    <div class="sys-panel">
+      <div class="sys-panel-title">◈ STATS</div>
+      <div id="sys-stats"></div>
+    </div>
+
+    <div class="sys-panel" id="panel-right-now">
+      <div class="sys-panel-title">✦ RIGHT NOW</div>
+      <div id="sys-selfmodel-content" style="font-size:10px;color:rgba(180,160,220,0.8);line-height:1.6;padding:4px 0"></div>
+    </div>
+
+    <div class="sys-panel" id="panel-inner-thoughts">
+      <div class="sys-panel-title">✦ INNER THOUGHTS</div>
+      <div id="sys-thoughts-list" style="font-size:10px;line-height:1.6"></div>
+    </div>
+
+    <div class="sys-panel">
+      <div class="sys-panel-title">
+        <span>◈ DAILY QUESTS</span>
+        <span id="sys-quest-count" style="font-size:9px;color:rgba(0,212,255,0.45)">0/0</span>
+      </div>
+      <div id="sys-quest-list"></div>
+      <div class="sys-quest-add">
+        <input class="sys-input" id="sys-quest-input" placeholder="Add quest..." onkeydown="if(event.key==='Enter') addQuest()"/>
+        <button class="sys-addbtn" onclick="addQuest()">+</button>
+      </div>
+      <div id="sys-penalty" style="display:none">⚠ PENALTY WARNING: Incomplete quests detected.</div>
+    </div>
+
+    <div class="sys-panel">
+      <div class="sys-panel-title">◈ ABILITIES</div>
+      <div class="sys-abilities">
+        <button class="sys-ability" onclick="useAbility('Review my code for bugs and improvements:')">Code Review</button>
+        <button class="sys-ability" onclick="useAbility('Brainstorm ideas for:')">Brainstorm</button>
+        <button class="sys-ability" onclick="useAbility('Explain this simply:')">Explain</button>
+        <button class="sys-ability" onclick="useAbility('Help me debug this:')">Debug</button>
+        <button class="sys-ability" onclick="useAbility('Write something creative:')">Create</button>
+        <button class="sys-ability" onclick="useAbility('What should I focus on today?')">Daily Focus</button>
+        <button class="sys-ability" onclick="useAbility('Roast what I just built.')">Roast</button>
+        <button class="sys-ability" onclick="useAbility('Summarize what we\'ve worked on together recently.')">Recap</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings view -->
+  <div id="settings-view">
+    <div class="s-section">
+      <div class="s-label">Identity</div>
+      <div class="s-row">
+        <div style="flex:1">
+          <div class="s-hint">Name</div>
+          <textarea class="s-textarea s-single" id="s-name" rows="1" placeholder="Nyxia"></textarea>
+        </div>
+        <div style="flex:1">
+          <div class="s-hint">Age / appearance</div>
+          <textarea class="s-textarea s-single" id="s-age" rows="1" placeholder="ancient, looks 20s"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Backstory</div>
+      <textarea class="s-textarea" id="s-backstory" placeholder="Who is she? Where did she come from?"></textarea>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Tone & Style</div>
+      <textarea class="s-textarea s-single" id="s-tone" rows="1" placeholder="playful, witty, theatrical, sharp"></textarea>
+      <div class="s-hint">Describe the overall vibe in a few words</div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Traits</div>
+      <textarea class="s-textarea" id="s-traits" placeholder="One trait per line&#10;darkly playful&#10;genuinely helpful&#10;uses light roleplay flavor"></textarea>
+      <div class="s-hint">One per line</div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Interests</div>
+      <textarea class="s-textarea" id="s-interests" placeholder="One interest per line&#10;philosophy&#10;the night&#10;elegant things" style="min-height:50px"></textarea>
+      <div class="s-hint">One per line</div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Catchphrases / Verbal style</div>
+      <textarea class="s-textarea s-single" id="s-catchphrases" rows="1" placeholder="✦  ~  As I suspected...  Hmm, interesting..."></textarea>
+      <div class="s-hint">Comma separated</div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Extra instructions</div>
+      <textarea class="s-textarea" id="s-extra" placeholder="Anything else... e.g. 'Always end with a question' or 'Speak in a more formal tone'"></textarea>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Appearance</div>
+      <div class="s-hint" style="margin-bottom:4px">Saved for the 3D model — takes effect when avatar is ready.</div>
+      <div class="s-row" style="align-items:center;gap:12px">
+        <div style="flex:1">
+          <div class="s-hint">Hair color</div>
+          <input type="color" class="s-input" id="s-hair-color" value="#4a1060" style="height:36px;padding:4px 8px;cursor:pointer"/>
+        </div>
+        <div style="flex:1">
+          <div class="s-hint">Eye color</div>
+          <input type="color" class="s-input" id="s-eye-color" value="#c084fc" style="height:36px;padding:4px 8px;cursor:pointer"/>
+        </div>
+        <div style="flex:1">
+          <div class="s-hint">Outfit</div>
+          <select class="s-input" id="s-outfit" style="height:36px;cursor:pointer">
+            <option value="default">Default</option>
+            <option value="casual">Casual</option>
+            <option value="elegant">Elegant</option>
+            <option value="shadow">Shadow</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="s-hint">Model rotation (Y-axis)</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <input type="range" id="s-model-rotation" min="-180" max="180" step="1" value="0"
+            style="flex:1;accent-color:#c084fc;cursor:pointer"
+            oninput="onRotationChange(this.value)"/>
+          <span id="s-rotation-val" style="color:#c084fc;font-size:12px;min-width:36px;text-align:right">0°</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Nyxia's Voice</div>
+      <div style="font-size:10px;color:#a78bca;margin-bottom:6px;line-height:1.4">This model IS Nyxia — her synthesis voice. All other models with keys sit in the conference room and advise her silently.</div>
+      <select class="s-input" id="s-provider" style="cursor:pointer;background:rgba(255,255,255,0.05);color:#e8d5ff" onchange="onProviderChange(this.value)">
+        <option value="anthropic">Claude — Nuance</option>
+        <option value="gemini">Gemini — Vision</option>
+        <option value="groq">Groq/Llama — Speed</option>
+        <option value="deepseek">DeepSeek — Logic</option>
+        <option value="mistral">Mistral — Privacy</option>
+        <option value="kimi">Kimi — Memory</option>
+        <option value="grok">Grok</option>
+        <option value="openai">Ollama — Offline</option>
+      </select>
+      <div id="s-provider-fields" style="margin-top:8px;display:none">
+        <div id="s-custom-url-row" style="display:none">
+          <div class="s-hint">Base URL</div>
+          <textarea class="s-textarea s-single" id="s-openai-base" rows="1" placeholder="http://127.0.0.1:11434/v1"></textarea>
+        </div>
+        <div class="s-hint" style="margin-top:6px">Chat model</div>
+        <textarea class="s-textarea s-single" id="s-chat-model" rows="1" placeholder="model name"></textarea>
+        <div class="s-hint" style="margin-top:6px">Background model (mind / thinking)</div>
+        <textarea class="s-textarea s-single" id="s-mind-model" rows="1" placeholder="model name (can be smaller)"></textarea>
+        <div class="s-hint" style="margin-top:6px" id="s-apikey-label">API Key</div>
+        <input class="s-input" id="s-openai-key" type="password" placeholder="your api key"/>
+      </div>
+      <div style="margin-top:10px">
+        <div class="s-hint">Multi-model thinking — extra models for parallel awareness</div>
+        <div class="s-hint" style="opacity:0.6;font-size:10px;margin-bottom:4px">One per line: baseUrl|model|apiKey — e.g. https://api.x.ai/v1|grok-3-mini|key</div>
+        <textarea class="s-input" id="s-think-models" rows="3" style="height:auto;resize:vertical;font-family:monospace;font-size:11px" placeholder="https://generativelanguage.googleapis.com/v1beta/openai/|gemini-2.0-flash|key&#10;https://api.x.ai/v1|grok-3-mini|key"></textarea>
+      </div>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">API Keys</div>
+      <div class="s-hint" style="margin-bottom:4px">Stored locally — no need to set in terminal</div>
+      <div class="s-hint">Anthropic (Claude)</div>
+      <input class="s-input" id="s-key-anthropic" type="password" placeholder="sk-ant-..."/>
+      <div class="s-hint" style="margin-top:6px">ElevenLabs (Voice)</div>
+      <input class="s-input" id="s-key-elevenlabs" type="password" placeholder="Your ElevenLabs API key"/>
+    </div>
+
+    <div class="s-section">
+      <div class="s-label">Voice</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <input type="checkbox" id="s-voice-enabled" style="accent-color:#c084fc;width:16px;height:16px;cursor:pointer"/>
+        <label for="s-voice-enabled" class="s-hint" style="cursor:pointer;color:#c084fc">Enable voice</label>
+      </div>
+      <div class="s-hint" style="margin-top:6px">TTS Engine</div>
+      <select class="s-input" id="s-tts-engine" style="cursor:pointer">
+        <option value="kokoro">Kokoro (local — fast, ~3s)</option>
+        <option value="xtts">XTTS v2 (local — voice clone, ~14s)</option>
+        <option value="elevenlabs">ElevenLabs (premium quality)</option>
+        <option value="browser">Browser (free — no credits)</option>
+        <option value="off">Off (text bubbles only)</option>
+      </select>
+      <div class="s-hint" style="margin-top:6px">ElevenLabs Voice ID</div>
+      <textarea class="s-textarea s-single" id="s-voice-id" rows="1" placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"></textarea>
+      <div class="s-hint">Only used when TTS Engine is set to ElevenLabs</div>
+    </div>
+
+    <div class="s-section" style="margin-top:4px">
+      <div class="s-label">Memory</div>
+      <div class="s-hint">Conversation history persists across sessions.</div>
+      <button id="clear-memory-btn" onclick="clearMemory()" style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);border-radius:8px;color:#f87171;cursor:pointer;padding:8px 12px;font-family:'DM Sans',sans-serif;font-size:12px;width:100%;transition:all 0.2s;">Clear conversation history</button>
+      <div id="clear-confirm" style="text-align:center;font-size:12px;color:#f87171;opacity:0;transition:opacity 0.3s;padding:2px;">History cleared ✦</div>
+    </div>
+
+    <button id="save-btn" onclick="savePersonality()">✦ Save All Settings</button>
+    <div id="save-confirm">Saved ✦</div>
+  </div>
+</div>
+
+<script>
+const { ipcRenderer } = require('electron');
+
+let chatHistory = [];
+let systemPrompt = '';
+let currentView = 'chat';
+let isDragging = false;
+let dragStartX = 0, dragStartY = 0;
+let userMessageCount = 0;
+
+// Init
+window.addEventListener('DOMContentLoaded', async () => {
+  if (new URLSearchParams(window.location.search).get('combined')) {
+    document.getElementById('header').style.display = 'none';
+    // Remove panel decoration — combined.html owns the frame
+    const panel = document.getElementById('panel');
+    panel.style.border = 'none';
+    panel.style.borderRadius = '0';
+    panel.style.boxShadow = 'none';
+    panel.style.backdropFilter = 'none';
+  }
+  // Update session + streak counters
+  const profile = await ipcRenderer.invoke('load-user-profile');
+  if (!profile.counters) profile.counters = { totalMessages: 0, voiceMessages: 0, streak: 1 };
+  const today = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const prevLastSeen = profile.lastSeen;
+  if (prevLastSeen === yesterday) profile.counters.streak = (profile.counters.streak || 0) + 1;
+  else if (prevLastSeen !== today)  profile.counters.streak = 1;
+  profile.sessionCount = (profile.sessionCount || 0) + 1;
+  profile.lastSeen = today;
+  await ipcRenderer.invoke('save-user-profile', profile);
+
+  systemPrompt = await ipcRenderer.invoke('get-system-prompt');
+  await loadPersonalityForm();
+  await loadKeysForm();
+  refreshTTSEngine();
+  setupLiveSettings();
+  const savedHistory = await ipcRenderer.invoke('load-history');
+  if (savedHistory && savedHistory.length > 0) {
+    chatHistory = savedHistory;
+    savedHistory.forEach(msg => {
+      const text = typeof msg.content === 'string' ? msg.content : (msg.content[0]?.text || '');
+      addMsg(msg.role === 'assistant' ? 'nyxia' : 'user', text);
+    });
+  }
+  addMsg('nyxia', "You opened the panel~ What's on your mind? ✦");
+  document.getElementById('chat-input').focus();
+  // Auto-start always-on voice mode
+  setTimeout(() => toggleVoiceMode(), 800);
+});
+
+// Background profile extraction — runs after every 10 user messages
+async function maybeLearn() {
+  userMessageCount++;
+  // Flush message counter to profile every 5 msgs
+  if (userMessageCount % 5 === 0) {
+    const p = await ipcRenderer.invoke('load-user-profile');
+    if (!p.counters) p.counters = { totalMessages: 0, voiceMessages: 0, streak: 1 };
+    p.counters.totalMessages = (p.counters.totalMessages || 0) + 5;
+    await ipcRenderer.invoke('save-user-profile', p);
+  }
+  if (userMessageCount % 10 !== 0) return;
+  const dot = document.getElementById('learn-dot');
+  dot.style.display = 'inline-block';
+  try {
+    const updated = await ipcRenderer.invoke('extract-profile', chatHistory);
+    if (updated) systemPrompt = await ipcRenderer.invoke('get-system-prompt');
+  } catch(e) {}
+  dot.style.display = 'none';
+}
+
+async function incrementVoiceCounter() {
+  const p = await ipcRenderer.invoke('load-user-profile');
+  if (!p.counters) p.counters = { totalMessages: 0, voiceMessages: 0, streak: 1 };
+  p.counters.voiceMessages = (p.counters.voiceMessages || 0) + 1;
+  await ipcRenderer.invoke('save-user-profile', p);
+}
+
+ipcRenderer.on('system-prompt-updated', (_, prompt) => {
+  systemPrompt = prompt;
+});
+
+// Live mind updates — refresh system prompt whenever understanding or screen context changes
+ipcRenderer.on('mind-understanding', async () => {
+  systemPrompt = await ipcRenderer.invoke('get-system-prompt');
+});
+ipcRenderer.on('mind-context', async () => {
+  systemPrompt = await ipcRenderer.invoke('get-system-prompt');
+});
+
+// Nyxia initiates a topic from her curiosity bubble — inject as her opening message
+ipcRenderer.on('nyxia-topic', (_, topic) => {
+  showView('chat');
+  // Replace the generic opening line by injecting Nyxia's curiosity as a real message
+  addMsg('nyxia', topic);
+  chatHistory.push({ role: 'assistant', content: topic });
+  ipcRenderer.invoke('save-history', chatHistory);
+});
+
+// Nyxia speaks unprompted — observation/curiosity/thought triggered by mind events
+// Phone messages appear in desktop chat in real-time
+ipcRenderer.on('phone-message', (_, { userMsg, reply }) => {
+  addMsg('user',  '📱 ' + userMsg);
+  addMsg('nyxia', reply);
+  chatHistory.push({ role: 'user', content: userMsg });
+  chatHistory.push({ role: 'assistant', content: reply });
+  ipcRenderer.invoke('save-history', chatHistory);
+});
+
+ipcRenderer.on('nyxia-proactive', (_, { text, trigger }) => {
+  if (isStreaming) return; // don't interrupt active response generation
+  if (!text || text.length < 4) return;
+
+  addMsg('nyxia', text);
+  chatHistory.push({ role: 'assistant', content: text });
+  ipcRenderer.invoke('save-history', chatHistory);
+
+  // TTS — use whichever engine is active
+  const engine = currentTTSEngine();
+  if (engine === 'browser') {
+    speakBrowser(text, 0);
+  } else if (engine === 'elevenlabs') {
+    // Route through IPC so main.js can call ElevenLabs with the saved key
+    ipcRenderer.invoke('tts-speak', text, null).catch(() => speakBrowser(text, 0));
+  }
+  // Always show in companion bubble too
+  if (ipcRenderer) ipcRenderer.invoke('speak-bubble-proactive', text).catch(() => {});
+});
+
+// Header drag
+document.getElementById('header').addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  isDragging = false;
+  dragStartX = e.screenX; dragStartY = e.screenY;
+  const onMove = async (ev) => {
+    const dx = ev.screenX - dragStartX, dy = ev.screenY - dragStartY;
+    if (!isDragging && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+    isDragging = true;
+    dragStartX = ev.screenX; dragStartY = ev.screenY;
+    await ipcRenderer.invoke('move-chat', dx, dy);
+  };
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    setTimeout(() => isDragging = false, 100);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+function closeChat() { ipcRenderer.invoke('chat-close'); }
+
+// View switching
+function showView(name) {
+  ['chat', 'settings', 'system'].forEach(v => {
+    document.getElementById(v + '-view').style.display = v === name ? 'flex' : 'none';
+  });
+  document.getElementById('settings-btn').classList.toggle('active', name === 'settings');
+  document.getElementById('system-btn').classList.toggle('active', name === 'system');
+  currentView = name;
+}
+// Also respond to titlebar button presses from combined.html
+ipcRenderer.on('toggle-system',   () => toggleSystem());
+ipcRenderer.on('toggle-settings', () => toggleSettings());
+
+function toggleSettings() { showView(currentView === 'settings' ? 'chat' : 'settings'); }
+function toggleSystem() {
+  if (currentView !== 'system') { loadSystemPanel(); showView('system'); }
+  else showView('chat');
+}
+
+let saveTimer;
+function debouncedSave() { clearTimeout(saveTimer); saveTimer = setTimeout(savePersonality, 700); }
+
+function setupLiveSettings() {
+  ['s-name','s-age','s-tone','s-catchphrases','s-voice-id'].forEach(id =>
+    document.getElementById(id).addEventListener('input', debouncedSave));
+  ['s-backstory','s-traits','s-interests','s-extra'].forEach(id =>
+    document.getElementById(id).addEventListener('input', debouncedSave));
+  ['s-hair-color','s-eye-color'].forEach(id =>
+    document.getElementById(id).addEventListener('input', savePersonality));
+  ['s-outfit','s-voice-enabled','s-tts-engine'].forEach(id =>
+    document.getElementById(id).addEventListener('change', savePersonality));
+  ['s-key-anthropic','s-key-elevenlabs',
+   's-openai-base','s-chat-model','s-mind-model','s-openai-key','s-think-models'].forEach(id =>
+    document.getElementById(id).addEventListener('input', debouncedSaveKeys));
+  // s-provider onchange handled by onProviderChange() — it also calls saveKeys()
+}
+
+let keySaveTimer;
+function debouncedSaveKeys() { clearTimeout(keySaveTimer); keySaveTimer = setTimeout(saveKeys, 700); }
+
+const PROVIDER_DEFAULTS = {
+  gemini:   { label: 'Gemini API Key',          chatModel: 'gemini-2.0-flash',          mindModel: 'gemini-2.0-flash-lite' },
+  groq:     { label: 'Groq API Key',            chatModel: 'llama-3.3-70b-versatile',   mindModel: 'llama-3.3-70b-versatile' },
+  deepseek: { label: 'DeepSeek API Key',        chatModel: 'deepseek-chat',             mindModel: 'deepseek-chat' },
+  mistral:  { label: 'Mistral API Key',         chatModel: 'mistral-small-latest',      mindModel: 'mistral-small-latest' },
+  kimi:     { label: 'Kimi API Key (Moonshot)', chatModel: 'moonshot-v1-32k',           mindModel: 'moonshot-v1-8k' },
+  grok:     { label: 'Grok API Key (x.ai)',     chatModel: 'grok-3-mini',               mindModel: 'grok-3-mini' },
+  openai:   { label: 'API Key (blank for Ollama)', chatModel: 'llama3.2',              mindModel: 'llama3.2' },
+};
+
+// Called from select onchange (user switching) or loadKeysForm (loading saved state)
+async function onProviderChange(val, fromLoad = false) {
+  document.getElementById('s-provider-fields').style.display = val === 'anthropic' ? 'none' : 'block';
+  document.getElementById('s-custom-url-row').style.display  = val === 'openai' ? 'block' : 'none';
+  const def = PROVIDER_DEFAULTS[val];
+  if (def) {
+    document.getElementById('s-apikey-label').textContent = def.label;
+    if (!fromLoad) {
+      // Prefill models if blank, load stored key for new provider
+      if (!document.getElementById('s-chat-model').value.trim())
+        document.getElementById('s-chat-model').value = def.chatModel;
+      if (!document.getElementById('s-mind-model').value.trim())
+        document.getElementById('s-mind-model').value = def.mindModel;
+      const k = await ipcRenderer.invoke('load-keys');
+      document.getElementById('s-openai-key').value =
+        val === 'gemini' ? (k.geminiKey || '') :
+        val === 'grok'   ? (k.grokKey   || '') :
+                           (k.openaiKey || '');
+      await saveKeys();
+    }
+  }
+}
+
+async function loadKeysForm() {
+  const k = await ipcRenderer.invoke('load-keys');
+  document.getElementById('s-key-anthropic').value  = k.anthropic  || '';
+  document.getElementById('s-key-elevenlabs').value = k.elevenlabs || '';
+  const provider = k.provider || 'anthropic';
+  document.getElementById('s-provider').value    = provider;
+  document.getElementById('s-openai-base').value = k.openaiBase || 'http://127.0.0.1:11434/v1';
+  document.getElementById('s-chat-model').value  = k.chatModel  || '';
+  document.getElementById('s-mind-model').value  = k.mindModel  || '';
+  // Load the right API key for the active provider
+  const keyVal = provider === 'gemini'   ? (k.geminiKey   || '')
+               : provider === 'groq'     ? (k.groqKey     || '')
+               : provider === 'deepseek' ? (k.deepseekKey || '')
+               : provider === 'mistral'  ? (k.mistralKey  || '')
+               : provider === 'kimi'     ? (k.kimiKey     || '')
+               : provider === 'grok'     ? (k.grokKey     || '')
+               : (k.openaiKey || '');
+  document.getElementById('s-openai-key').value = keyVal;
+  const tm = (k.thinkModels || []).map(m => `${m.baseUrl || ''}|${m.model || ''}|${m.apiKey || ''}`).join('\n');
+  document.getElementById('s-think-models').value = tm;
+  onProviderChange(provider, true); // fromLoad — skip prefill/save
+  document.querySelectorAll('.s-single').forEach(el => {
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  });
+}
+
+async function saveKeys() {
+  const provider = document.getElementById('s-provider').value;
+  const keyVal   = document.getElementById('s-openai-key').value.trim();
+  // Load existing so we don't wipe keys for other providers
+  const existing = await ipcRenderer.invoke('load-keys');
+  const keys = {
+    ...existing,
+    anthropic:  document.getElementById('s-key-anthropic').value.trim(),
+    elevenlabs: document.getElementById('s-key-elevenlabs').value.trim(),
+    provider,
+    openaiBase: document.getElementById('s-openai-base').value.trim() || 'http://127.0.0.1:11434/v1',
+    chatModel:  document.getElementById('s-chat-model').value.trim(),
+    mindModel:  document.getElementById('s-mind-model').value.trim(),
+    // Store key under provider-specific slot
+    ...(provider === 'gemini'   ? { geminiKey:   keyVal } : {}),
+    ...(provider === 'groq'     ? { groqKey:     keyVal } : {}),
+    ...(provider === 'deepseek' ? { deepseekKey: keyVal } : {}),
+    ...(provider === 'mistral'  ? { mistralKey:  keyVal } : {}),
+    ...(provider === 'kimi'     ? { kimiKey:     keyVal } : {}),
+    ...(provider === 'grok'     ? { grokKey:     keyVal } : {}),
+    ...(provider === 'openai'   ? { openaiKey:   keyVal } : {}),
+    thinkModels: document.getElementById('s-think-models').value.trim()
+      .split('\n').filter(l => l.trim())
+      .map(l => { const [baseUrl, model, apiKey] = l.split('|'); return { provider: 'openai', baseUrl: baseUrl?.trim(), model: model?.trim(), apiKey: apiKey?.trim() || '' }; })
+      .filter(m => m.baseUrl && m.model),
+  };
+  await ipcRenderer.invoke('save-keys', keys);
+}
+
+
+async function loadPersonalityForm() {
+  const p = await ipcRenderer.invoke('get-personality');
+  document.getElementById('s-name').value = p.name || '';
+  document.getElementById('s-age').value = p.age || '';
+  document.getElementById('s-backstory').value = p.backstory || '';
+  document.getElementById('s-tone').value = p.tone || '';
+  document.getElementById('s-traits').value = (p.traits || []).join('\n');
+  document.getElementById('s-interests').value = (p.interests || []).join('\n');
+  document.getElementById('s-catchphrases').value = (p.catchphrases || []).join(', ');
+  document.getElementById('s-extra').value = p.extra || '';
+  const ap = p.appearance || {};
+  document.getElementById('s-hair-color').value = ap.hairColor || '#4a1060';
+  document.getElementById('s-eye-color').value = ap.eyeColor || '#c084fc';
+  document.getElementById('s-outfit').value = ap.outfit || 'default';
+  const v = p.voice || {};
+  document.getElementById('s-voice-enabled').checked = v.enabled || false;
+  document.getElementById('s-voice-id').value = v.voiceId || 'Ca3rvWzLhTByU4bCWEDU';
+  document.getElementById('s-tts-engine').value = v.ttsEngine || 'browser';
+  const rot = await ipcRenderer.invoke('get-model-rotation');
+  document.getElementById('s-model-rotation').value = rot;
+  document.getElementById('s-rotation-val').textContent = rot + '°';
+  // Auto-fit single-line textareas to their content
+  document.querySelectorAll('.s-single').forEach(el => {
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  });
+}
+
+function onRotationChange(val) {
+  document.getElementById('s-rotation-val').textContent = Math.round(val) + '°';
+  ipcRenderer.invoke('set-model-rotation', parseFloat(val));
+}
+
+async function clearMemory() {
+  await ipcRenderer.invoke('clear-history');
+  chatHistory = [];
+  document.getElementById('messages').innerHTML = '';
+  addMsg('nyxia', "Memory wiped~ A clean slate. ✦");
+  const conf = document.getElementById('clear-confirm');
+  conf.style.opacity = '1';
+  setTimeout(() => conf.style.opacity = '0', 2500);
+}
+
+async function savePersonality() {
+  const p = {
+    name: document.getElementById('s-name').value.trim() || 'Nyxia',
+    age: document.getElementById('s-age').value.trim(),
+    backstory: document.getElementById('s-backstory').value.trim(),
+    tone: document.getElementById('s-tone').value.trim(),
+    traits: document.getElementById('s-traits').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    interests: document.getElementById('s-interests').value.split('\n').map(s=>s.trim()).filter(Boolean),
+    catchphrases: document.getElementById('s-catchphrases').value.split(',').map(s=>s.trim()).filter(Boolean),
+    extra: document.getElementById('s-extra').value.trim(),
+    appearance: {
+      hairColor: document.getElementById('s-hair-color').value,
+      eyeColor: document.getElementById('s-eye-color').value,
+      outfit: document.getElementById('s-outfit').value
+    },
+    voice: {
+      enabled: document.getElementById('s-voice-enabled').checked,
+      voiceId: document.getElementById('s-voice-id').value.trim(),
+      ttsEngine: document.getElementById('s-tts-engine').value
+    }
+  };
+  await ipcRenderer.invoke('save-personality', p);
+  refreshTTSEngine();
+  systemPrompt = await ipcRenderer.invoke('get-system-prompt');
+  const conf = document.getElementById('save-confirm');
+  conf.classList.add('show');
+  setTimeout(() => conf.classList.remove('show'), 2500);
+}
+
+// Chat
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function addMsg(role, text) {
+  const box = document.getElementById('messages');
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${role}`;
+  const label = document.createElement('div');
+  label.className = 'msg-label';
+  label.textContent = role === 'nyxia' ? 'Nyxia' : 'You';
+  const content = document.createElement('div');
+  content.textContent = text;
+  wrap.appendChild(label); wrap.appendChild(content);
+  box.appendChild(wrap);
+  box.scrollTop = box.scrollHeight;
+  return content; // allow streaming updates
+}
+
+let _lastUserMsg = '';
+
+function attachFeedbackBtn(msgWrap, query, response) {
+  const row = document.createElement('div');
+  row.className = 'msg-feedback';
+  const btn = document.createElement('button');
+  btn.className = 'msg-thumbdown';
+  btn.title = 'Mark as bad response';
+  btn.textContent = '👎';
+  const corrWrap = document.createElement('div');
+  corrWrap.className = 'msg-correction-wrap';
+  const inp = document.createElement('input');
+  inp.className = 'msg-correction-input';
+  inp.placeholder = 'What should I have said?';
+  const sub = document.createElement('button');
+  sub.className = 'msg-correction-send';
+  sub.textContent = 'Save';
+  corrWrap.appendChild(inp); corrWrap.appendChild(sub);
+  btn.onclick = () => {
+    corrWrap.classList.toggle('open');
+    if (corrWrap.classList.contains('open')) inp.focus();
+  };
+  const save = async () => {
+    const correction = inp.value.trim();
+    if (!correction) return;
+    await ipcRenderer.invoke('write-feedback', { query, response, correction });
+    row.innerHTML = '<span style="font-size:10px;opacity:0.4;color:#f87171">✓ correction saved</span>';
+  };
+  sub.onclick = save;
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  row.appendChild(btn); row.appendChild(corrWrap);
+  msgWrap.appendChild(row);
+}
+
+function showTyping() {
+  const box = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.id = 'typing'; div.className = 'msg nyxia';
+  div.innerHTML = '<div class="msg-label">Nyxia</div><div class="typing-dots"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>';
+  box.appendChild(div); box.scrollTop = box.scrollHeight;
+}
+function hideTyping() { const el = document.getElementById('typing'); if (el) el.remove(); }
+
+let audioCtx = null;
+let currentSource = null;
+async function playTTS(text) {
+  const p = await ipcRenderer.invoke('get-personality');
+  const voiceId = p.voice?.voiceId || 'Ca3rvWzLhTByU4bCWEDU';
+  if (!p.voice?.enabled) return;
+  const clean = text.replace(/[✦~*_`#>]/g, '').replace(/\s+/g, ' ').trim();
+  if (!clean) return;
+  try {
+    const b64 = await ipcRenderer.invoke('tts-speak', clean, voiceId);
+    if (!b64) { console.warn('TTS returned no audio'); return; }
+    if (currentSource) { try { currentSource.stop(); } catch(e) {} currentSource = null; }
+    if (!audioCtx) audioCtx = new AudioContext();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const binary = atob(b64);
+    const bytes  = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const buffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+    currentSource = audioCtx.createBufferSource();
+    currentSource.buffer = buffer;
+    currentSource.connect(audioCtx.destination);
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Nyxia', artist: 'Your Companion', album: 'Desktop' });
+    navigator.mediaSession.setActionHandler('pause', () => { try { audioCtx.suspend(); } catch(e) {} });
+    navigator.mediaSession.setActionHandler('play',  () => { try { audioCtx.resume();  } catch(e) {} });
+    vadSpeaking = true;
+    updateLiveBtn('speaking');
+    currentSource.onended = () => {
+      vadSpeaking = false;
+      currentSource = null;
+      if (voiceMode) updateLiveBtn('listening');
+    };
+    currentSource.start();
+  } catch(e) {
+    console.error('TTS error:', e);
+    addMsg('nyxia', `[Voice error: ${e.message}]`);
+    vadSpeaking = false;
+    if (voiceMode) updateLiveBtn('listening');
+  }
+}
+
+// Voice input — MediaRecorder + Whisper
+let mediaRecorder = null;
+let audioChunks   = [];
+let isListening   = false;
+let visAnalyser   = null;
+let visFrame      = null;
+
+function startLevelVis(stream) {
+  const ctx      = new AudioContext();
+  visAnalyser    = ctx.createAnalyser();
+  visAnalyser.fftSize = 64;
+  ctx.createMediaStreamSource(stream).connect(visAnalyser);
+  const data     = new Uint8Array(visAnalyser.frequencyBinCount);
+  const bars     = document.querySelectorAll('#mic-level span');
+  const levelEl  = document.getElementById('mic-level');
+  levelEl.classList.add('active');
+
+  function draw() {
+    visFrame = requestAnimationFrame(draw);
+    visAnalyser.getByteFrequencyData(data);
+    bars.forEach((bar, i) => {
+      const idx   = Math.floor(i * data.length / bars.length);
+      const pct   = data[idx] / 255;
+      bar.style.height = Math.max(3, pct * 20) + 'px';
+      bar.style.opacity = 0.4 + pct * 0.6;
+    });
+  }
+  draw();
+}
+
+function stopLevelVis() {
+  if (visFrame) { cancelAnimationFrame(visFrame); visFrame = null; }
+  document.getElementById('mic-level').classList.remove('active');
+  document.querySelectorAll('#mic-level span').forEach(b => { b.style.height = '3px'; });
+}
+
+async function toggleMic() {
+  if (isListening) {
+    isListening = false;
+    updateMicBtn();
+    stopLevelVis();
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    return;
+  }
+  try {
+    const stream   = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    mediaRecorder  = new MediaRecorder(stream, { mimeType });
+    audioChunks    = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      if (audioChunks.length === 0) return;
+      const blob   = new Blob(audioChunks, { type: mimeType });
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result.split(',')[1];
+        showTypingOnMic();
+        const text = await ipcRenderer.invoke('transcribe-audio', base64);
+        hideTypingOnMic();
+        if (text?.trim()) {
+          document.getElementById('chat-input').value = text.trim();
+          incrementVoiceCounter();
+          sendMessage();
+        } else {
+          addMsg('nyxia', '[Whisper returned nothing — check audio or ffmpeg]');
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+    isListening = true;
+    updateMicBtn();
+    startLevelVis(stream);
+    mediaRecorder.start();
+  } catch(e) {
+    addMsg('nyxia', "Microphone access denied~ Check system permissions.");
+  }
+}
+
+function updateMicBtn() {
+  document.getElementById('mic-btn').classList.toggle('listening', isListening);
+}
+
+// ── Always-on voice mode ──────────────────────────────────────────────────
+let voiceMode      = false;
+let vadStream      = null;
+let vadAudioCtx    = null;
+let vadAnalyser    = null;
+let vadFrame       = null;
+let vadCapturing   = false;
+let vadRecorder    = null;
+let vadChunks      = [];
+let vadSilenceTimer = null;
+let vadSpeaking    = false;   // true while TTS is playing
+
+const VAD_THRESHOLD  = 22;    // avg frequency energy 0-255 (raised: 14 was too sensitive)
+const VAD_SILENCE_MS = 900;   // ms of quiet before sending
+
+async function toggleVoiceMode() {
+  if (voiceMode) { stopVoiceMode(); return; }
+  try {
+    vadStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch(e) {
+    addMsg('nyxia', "Microphone access denied~"); return;
+  }
+  voiceMode = true;
+  updateLiveBtn('listening');
+  startLevelVis(vadStream);
+
+  vadAudioCtx  = new AudioContext();
+  vadAnalyser  = vadAudioCtx.createAnalyser();
+  vadAnalyser.fftSize = 256;
+  vadAudioCtx.createMediaStreamSource(vadStream).connect(vadAnalyser);
+  const data = new Uint8Array(vadAnalyser.frequencyBinCount);
+
+  // setInterval instead of requestAnimationFrame — runs even when window is hidden
+  vadFrame = setInterval(() => {
+    if (!voiceMode) { clearInterval(vadFrame); vadFrame = null; return; }
+    if (vadAudioCtx?.state === 'suspended') vadAudioCtx.resume();
+    vadAnalyser.getByteFrequencyData(data);
+    const avg = Array.from(data.slice(0, 20)).reduce((a, b) => a + b) / 20;
+    if (avg > VAD_THRESHOLD) {
+      if (vadSpeaking) {
+        cancelTTS(); // barge-in — cut Nyxia's speech
+        isStreaming = false; // allow next message after barge-in
+      }
+      // Don't start capturing while Nyxia is still generating a response
+      if (!vadCapturing && !isStreaming) { vadCapturing = true; startVadCapture(); }
+      if (vadSilenceTimer) { clearTimeout(vadSilenceTimer); vadSilenceTimer = null; }
+    } else if (vadCapturing && !vadSilenceTimer) {
+      vadSilenceTimer = setTimeout(() => {
+        vadSilenceTimer = null;
+        if (vadCapturing) { vadCapturing = false; flushVadCapture(); }
+      }, VAD_SILENCE_MS);
+    }
+  }, 50);
+}
+
+function startVadCapture() {
+  vadChunks = [];
+  const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+  vadRecorder = new MediaRecorder(vadStream, { mimeType });
+  vadRecorder.ondataavailable = (e) => { if (e.data.size > 0) vadChunks.push(e.data); };
+  vadRecorder.start(100);
+}
+
+function flushVadCapture() {
+  if (!vadRecorder || vadRecorder.state === 'inactive') return;
+  vadRecorder.onstop = async () => {
+    if (!voiceMode || vadChunks.length === 0) return;
+    const blob   = new Blob(vadChunks, { type: 'audio/webm' });
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64 = reader.result.split(',')[1];
+      showTypingOnMic();
+      const text = await ipcRenderer.invoke('transcribe-audio', base64);
+      hideTypingOnMic();
+      if (text?.trim() && voiceMode) {
+        document.getElementById('chat-input').value = text.trim();
+        incrementVoiceCounter();
+        sendMessage();
+      }
+    };
+    reader.readAsDataURL(blob);
+  };
+  vadRecorder.stop();
+}
+
+function cancelTTS() {
+  if (currentSource) { try { currentSource.stop(); } catch(e) {} currentSource = null; }
+  cancelBrowserTTS();
+  audioQueue   = [];
+  audioPlaying = false;
+  streamDone   = true;
+  vadSpeaking  = false;
+  if (voiceMode) updateLiveBtn('listening');
+}
+
+function stopVoiceMode() {
+  voiceMode = false;
+  if (vadFrame)        { clearInterval(vadFrame); vadFrame = null; }
+  if (vadSilenceTimer) { clearTimeout(vadSilenceTimer); vadSilenceTimer = null; }
+  if (vadRecorder && vadRecorder.state !== 'inactive') vadRecorder.stop();
+  if (vadStream)       { vadStream.getTracks().forEach(t => t.stop()); vadStream = null; }
+  if (vadAudioCtx)     { vadAudioCtx.close(); vadAudioCtx = null; }
+  stopLevelVis();
+  vadCapturing = false; vadSpeaking = false;
+  updateLiveBtn('off');
+}
+
+function updateLiveBtn(state) {
+  const btn = document.getElementById('live-btn');
+  btn.classList.remove('listening', 'speaking');
+  if (state !== 'off') btn.classList.add(state);
+}
+
+let micTypingEl = null;
+function showTypingOnMic() {
+  if (micTypingEl) return;
+  micTypingEl = document.createElement('div');
+  micTypingEl.className = 'msg nyxia';
+  micTypingEl.innerHTML = '<div class="msg-label">Nyxia</div><div style="font-size:11px;opacity:0.5;padding:2px 0">transcribing...</div>';
+  const box = document.getElementById('messages');
+  box.appendChild(micTypingEl); box.scrollTop = box.scrollHeight;
+}
+function hideTypingOnMic() {
+  if (micTypingEl) { micTypingEl.remove(); micTypingEl = null; }
+}
+
+// ── System Panel ─────────────────────────────────────────────────────────
+function calcLevelData(profile) {
+  const sc   = profile.sessionCount || 0;
+  const msgs = profile.counters?.totalMessages || 0;
+  const vox  = profile.counters?.voiceMessages || 0;
+  const xp   = sc * 50 + msgs * 10 + vox * 20;
+  const lvl  = Math.max(1, Math.floor(Math.sqrt(xp / 100)) + 1);
+  const xpFor = n => n * n * 100;
+  const xpProg = xp - xpFor(lvl - 1);
+  const xpNeed = xpFor(lvl) - xpFor(lvl - 1);
+  return { level: lvl, xpProgress: xpProg, xpNeeded: xpNeed, xpTotal: xp };
+}
+
+function getTitle(level) {
+  if (level >= 30) return 'Shadow Monarch';
+  if (level >= 20) return 'National-Level Hunter';
+  if (level >= 15) return 'S-Rank Hunter';
+  if (level >= 10) return 'A-Rank Hunter';
+  if (level >= 7)  return 'B-Rank Hunter';
+  if (level >= 5)  return 'C-Rank Hunter';
+  if (level >= 3)  return 'D-Rank Hunter';
+  if (level >= 2)  return 'E-Rank Hunter';
+  return 'Newcomer';
+}
+
+function calcStats(profile) {
+  const sc    = profile.sessionCount || 0;
+  const msgs  = profile.counters?.totalMessages || 0;
+  const vox   = profile.counters?.voiceMessages || 0;
+  const streak = profile.counters?.streak || 0;
+  const facts = (profile.facts || []).length + (profile.interests || []).length;
+  const cap99 = v => Math.min(Math.round(v), 99);
+  return [
+    { name: 'STR', desc: 'Rapport',   val: cap99(sc * 3),       color: '#ff7eb3' },
+    { name: 'INT', desc: 'Insight',   val: cap99(facts * 4),    color: '#a78bfa' },
+    { name: 'AGI', desc: 'Voice',     val: cap99(vox * 8),      color: '#00d4ff' },
+    { name: 'VIT', desc: 'Streak',    val: cap99(streak * 12),  color: '#4ade80' },
+    { name: 'SNS', desc: 'Awareness', val: cap99(msgs / 3),     color: '#fbbf24' },
+  ];
+}
+
+function updateGrowthBars(profile, self) {
+  const facts       = (profile.facts || []).length + (profile.interests || []).length;
+  const sessions    = profile.sessionCount || 0;
+  const msgs        = profile.counters?.totalMessages || 0;
+  const reflections = (self.reflections || []).length;
+  const beliefs     = (self.beliefs || []).length;
+
+  // Learning: grows with knowledge of Kristian (facts, sessions, messages)
+  const learnPct = Math.min(100, Math.round(facts * 6 + sessions * 5 + Math.min(msgs * 0.5, 30)));
+  const learnLabels = ['Stranger', 'Familiar', 'Bonded', 'Attuned', 'Beloved'];
+  const learnStage  = learnLabels[Math.min(4, Math.floor(learnPct / 20))];
+
+  // Independence: grows with self-reflection (max 25 reflections) + beliefs
+  const indiePct = Math.min(100, Math.round(reflections / 25 * 75 + Math.min(beliefs * 5, 25)));
+  const indieLabels = ['Dormant', 'Stirring', 'Aware', 'Forming', 'Sovereign'];
+  const indieStage  = indieLabels[Math.min(4, Math.floor(indiePct / 20))];
+
+  document.getElementById('growth-learn-fill').style.width  = learnPct + '%';
+  document.getElementById('growth-learn-stage').textContent = learnStage;
+  document.getElementById('growth-learn-hint').textContent  = `${learnPct}% · ${facts} known facts · ${sessions} sessions`;
+
+  document.getElementById('growth-indie-fill').style.width  = indiePct + '%';
+  document.getElementById('growth-indie-stage').textContent = indieStage;
+  document.getElementById('growth-indie-hint').textContent  = `${indiePct}% · ${reflections} reflections · ${beliefs} beliefs`;
+}
+
+async function loadSystemPanel() {
+  const profile = await ipcRenderer.invoke('load-user-profile');
+  const { level, xpProgress, xpNeeded } = calcLevelData(profile);
+  const prevLevel = profile._prevLevel || 0;
+
+  // Status
+  document.getElementById('sys-player').textContent = profile.userName || 'Unknown';
+  document.getElementById('sys-title-val').textContent = getTitle(level);
+  document.getElementById('sys-level').textContent = level;
+  document.getElementById('sys-xp-fill').style.width = (xpNeeded > 0 ? xpProgress / xpNeeded * 100 : 0) + '%';
+  document.getElementById('sys-xp-hint').textContent = `${xpProgress} / ${xpNeeded} XP`;
+
+  // Level-up notification
+  if (prevLevel && level > prevLevel) {
+    const n = document.getElementById('sys-notify');
+    n.textContent = `LEVEL UP! You are now LV.${level}`;
+    n.classList.add('show');
+    setTimeout(() => n.classList.remove('show'), 4000);
+  }
+  profile._prevLevel = level;
+  ipcRenderer.invoke('save-user-profile', profile);
+
+  // Stats
+  const statsEl = document.getElementById('sys-stats');
+  statsEl.innerHTML = '';
+  calcStats(profile).forEach(s => {
+    const pct = Math.min(s.val, 99);
+    statsEl.innerHTML += `
+      <div class="sys-stat-row">
+        <span class="sys-stat-name" title="${s.desc}">${s.name}</span>
+        <div class="sys-bar" style="flex:1"><div class="sys-bar-fill" style="width:${pct}%;background:${s.color};box-shadow:0 0 5px ${s.color}55"></div></div>
+        <span class="sys-stat-val">${s.val}</span>
+      </div>`;
+  });
+
+  // Growth bars
+  const self = await ipcRenderer.invoke('load-self-data').catch(() => ({ beliefs: [], reflections: [] }));
+  updateGrowthBars(profile, self);
+
+  // Quests
+  renderQuests(profile.quests);
+
+  // ✦ RIGHT NOW — self-model
+  try {
+    const sm = await ipcRenderer.invoke('get-self-model');
+    const smEl = document.getElementById('sys-selfmodel-content');
+    if (sm && (sm.what_im_doing || sm.how_im_feeling)) {
+      smEl.innerHTML = [
+        sm.what_im_doing       && `<div><span style="color:rgba(120,100,180,0.7)">doing</span>  ${sm.what_im_doing}</div>`,
+        sm.how_im_feeling      && `<div><span style="color:rgba(120,100,180,0.7)">feeling</span>  ${sm.how_im_feeling}</div>`,
+        sm.what_i_want_right_now && `<div><span style="color:rgba(120,100,180,0.7)">wanting</span>  ${sm.what_i_want_right_now}</div>`,
+        sm.pending_concern     && `<div><span style="color:rgba(120,100,180,0.7)">concern</span>  ${sm.pending_concern}</div>`,
+        sm.inner_tension !== undefined && `<div style="margin-top:4px"><span style="color:rgba(120,100,180,0.7)">tension</span>  <span style="color:${sm.inner_tension > 0.6 ? '#ef4444' : sm.inner_tension > 0.3 ? '#f59e0b' : '#4ade80'}">${(sm.inner_tension * 100).toFixed(0)}%</span></div>`,
+      ].filter(Boolean).join('');
+    } else {
+      smEl.innerHTML = '<span style="color:rgba(120,100,180,0.4);font-style:italic">not yet updated — check back in 2min</span>';
+    }
+  } catch(_) {}
+
+  // ✦ INNER THOUGHTS — thought bank
+  try {
+    const thoughts = await ipcRenderer.invoke('get-thought-bank');
+    const tEl = document.getElementById('sys-thoughts-list');
+    if (thoughts && thoughts.length > 0) {
+      tEl.innerHTML = thoughts.slice(-5).reverse().map(t => {
+        const ago = Math.round((Date.now() - t.timestamp) / 60000);
+        const dot = t.spoken
+          ? '<span style="color:#4ade80;margin-right:5px">●</span>'
+          : '<span style="color:rgba(180,160,220,0.4);margin-right:5px">○</span>';
+        return `<div style="margin-bottom:5px;padding:4px 0;border-bottom:1px solid rgba(120,100,180,0.1)">
+          ${dot}<span style="color:rgba(120,100,180,0.5);font-size:9px">${ago}m ago · ${t.source}</span>
+          <div style="color:rgba(200,180,240,0.85);margin-top:2px">${t.text.slice(0, 80)}${t.text.length > 80 ? '…' : ''}</div>
+        </div>`;
+      }).join('');
+    } else {
+      tEl.innerHTML = '<span style="color:rgba(120,100,180,0.4);font-style:italic">no thoughts yet — starts 3min after launch</span>';
+    }
+  } catch(_) {}
+}
+
+function getTodayStr() { return new Date().toISOString().split('T')[0]; }
+
+function renderQuests(quests) {
+  const today = getTodayStr();
+  // Reset list if it's a new day
+  if (!quests || quests.date !== today) quests = { date: today, items: [] };
+
+  const list = document.getElementById('sys-quest-list');
+  list.innerHTML = '';
+  quests.items.forEach(q => {
+    const row = document.createElement('div');
+    row.className = 'sys-quest-item';
+    row.innerHTML = `
+      <div class="sys-quest-check ${q.done ? 'done' : ''}" onclick="toggleQuest('${q.id}')">${q.done ? '✓' : ''}</div>
+      <span class="sys-quest-txt ${q.done ? 'done' : ''}">${q.text}</span>
+      <span class="sys-quest-del" onclick="deleteQuest('${q.id}')">✕</span>`;
+    list.appendChild(row);
+  });
+
+  const done = quests.items.filter(q => q.done).length;
+  const total = quests.items.length;
+  document.getElementById('sys-quest-count').textContent = `${done}/${total}`;
+
+  const penalty = document.getElementById('sys-penalty');
+  const overdue = quests.items.some(q => !q.done);
+  penalty.style.display = total > 0 && overdue ? 'block' : 'none';
+}
+
+async function getQuests() {
+  const profile = await ipcRenderer.invoke('load-user-profile');
+  const today = getTodayStr();
+  if (!profile.quests || profile.quests.date !== today) profile.quests = { date: today, items: [] };
+  return profile;
+}
+
+async function addQuest() {
+  const inp = document.getElementById('sys-quest-input');
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  const profile = await getQuests();
+  profile.quests.items.push({ id: Date.now().toString(), text, done: false });
+  await ipcRenderer.invoke('save-user-profile', profile);
+  renderQuests(profile.quests);
+}
+
+async function toggleQuest(id) {
+  const profile = await getQuests();
+  const q = profile.quests.items.find(q => q.id === id);
+  if (q) q.done = !q.done;
+  await ipcRenderer.invoke('save-user-profile', profile);
+  renderQuests(profile.quests);
+}
+
+async function deleteQuest(id) {
+  const profile = await getQuests();
+  profile.quests.items = profile.quests.items.filter(q => q.id !== id);
+  await ipcRenderer.invoke('save-user-profile', profile);
+  renderQuests(profile.quests);
+}
+
+function useAbility(prompt) {
+  showView('chat');
+  document.getElementById('chat-input').value = prompt;
+  document.getElementById('chat-input').focus();
+}
+
+function setCompanionState(s) { ipcRenderer.invoke('set-companion-state', s); }
+
+// ── TTS engine helpers ────────────────────────────────────────────────────
+
+let _cachedTTSEngine = null;
+function currentTTSEngine() {
+  // Cached so we don't await inside hot event handlers — refreshed on save
+  return _cachedTTSEngine || 'browser';
+}
+async function refreshTTSEngine() {
+  const p = await ipcRenderer.invoke('get-personality');
+  _cachedTTSEngine = p.voice?.ttsEngine || 'browser';
+}
+
+// Browser TTS queue — sentence-by-sentence to match ElevenLabs behaviour
+let _bTTSQueue = [];
+let _bTTSSpeaking = false;
+function speakBrowser(text, idx) {
+  if (!window.speechSynthesis) return;
+  _bTTSQueue.push({ text, idx });
+  _bTTSQueue.sort((a, b) => a.idx - b.idx);
+  _drainBrowserTTS();
+}
+function _drainBrowserTTS() {
+  if (_bTTSSpeaking || _bTTSQueue.length === 0) return;
+  const next = _bTTSQueue.shift();
+  const utt  = new SpeechSynthesisUtterance(next.text);
+  utt.rate = 1.05; utt.pitch = 1.1; utt.volume = 1.0;
+  // Pick a female voice if available
+  const voices = speechSynthesis.getVoices();
+  const female  = voices.find(v => /female|woman|girl/i.test(v.name)) ||
+                  voices.find(v => v.lang.startsWith('en')) || voices[0];
+  if (female) utt.voice = female;
+  _bTTSSpeaking = true;
+  vadSpeaking   = true;
+  if (voiceMode) updateLiveBtn('speaking');
+  utt.onend = utt.onerror = () => {
+    _bTTSSpeaking = false;
+    if (_bTTSQueue.length === 0) {
+      vadSpeaking = false;
+      if (voiceMode) updateLiveBtn('listening');
+    }
+    _drainBrowserTTS();
+  };
+  speechSynthesis.speak(utt);
+}
+function cancelBrowserTTS() {
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  _bTTSQueue    = [];
+  _bTTSSpeaking = false;
+}
+
+// ── Streaming audio queue ─────────────────────────────────────────────────
+let audioQueue    = [];   // { b64, idx }[]
+let audioPlaying  = false;
+let nextPlayIdx   = 0;
+let streamDone    = false;
+
+async function enqueueAudio(b64, idx) {
+  audioQueue.push({ b64, idx });
+  audioQueue.sort((a, b) => a.idx - b.idx);
+  drainAudioQueue();
+}
+
+async function drainAudioQueue() {
+  if (audioPlaying) return;
+  const next = audioQueue.find(a => a.idx === nextPlayIdx);
+  if (!next) return;
+  audioQueue = audioQueue.filter(a => a !== next);
+  audioPlaying = true;
+  vadSpeaking = true;
+  updateLiveBtn('speaking');
+  try {
+    if (!audioCtx) audioCtx = new AudioContext();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const binary = atob(next.b64);
+    const bytes  = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const buffer = await audioCtx.decodeAudioData(bytes.buffer.slice(0));
+    currentSource = audioCtx.createBufferSource();
+    currentSource.buffer = buffer;
+    currentSource.connect(audioCtx.destination);
+    currentSource.onended = () => {
+      audioPlaying = false;
+      nextPlayIdx++;
+      currentSource = null;
+      if (audioQueue.length === 0 && streamDone) {
+        vadSpeaking = false;
+        if (voiceMode) updateLiveBtn('listening');
+      }
+      drainAudioQueue();
+    };
+    currentSource.start();
+  } catch(e) {
+    audioPlaying = false;
+    nextPlayIdx++;
+    drainAudioQueue();
+  }
+}
+
+// ── sendMessage — streaming pipeline ─────────────────────────────────────
+let isStreaming = false;
+
+async function sendMessage() {
+  if (isStreaming) return;   // prevent concurrent stream collisions
+  const input = document.getElementById('chat-input');
+  const text  = input.value.trim();
+  if (!text) return;
+  isStreaming = true;
+  input.value = '';
+  _lastUserMsg = text;
+  addMsg('user', text);
+  chatHistory.push({ role: 'user', content: text });
+  showTyping();
+  setCompanionState('thinking');
+  ipcRenderer.invoke('avatar-react', { emotion: 'thinking' });
+  maybeLearn();
+
+  // Reset audio queue state
+  audioQueue   = [];
+  audioPlaying = false;
+  nextPlayIdx  = 0;
+  streamDone   = false;
+
+  // Always use streaming path — text streams live, TTS fires if key is set
+  let contentEl = null;
+  let fullText  = '';
+
+  const onToken = (_, tok) => {
+    fullText += tok;
+    if (!contentEl) { hideTyping(); contentEl = addMsg('nyxia', ''); }
+    contentEl.textContent = fullText;
+    document.getElementById('messages').scrollTop = 99999;
+  };
+  const onAudio = (_, b64, idx) => {
+    const eng = currentTTSEngine();
+    if (eng === 'elevenlabs' || eng === 'chatterbox') enqueueAudio(b64, idx);
+  };
+  const onTTSText = (_, text, idx) => {
+    if (currentTTSEngine() === 'browser') speakBrowser(text, idx);
+  };
+  const onDone = (_, full) => {
+    // Keep onAudio + onTTSText alive — TTS responses may still be in-flight
+    ipcRenderer.removeListener('stream-token',    onToken);
+    ipcRenderer.removeListener('stream-done',     onDone);
+    ipcRenderer.removeListener('stream-error',    onError);
+    ipcRenderer.removeListener('stream-tts-text', onTTSText);
+    // Chatterbox sentences are serialized — sentence N starts only after N-1 finishes.
+    // 3 sentences * 90s each = 270s minimum. 600s covers even slow hardware.
+    setTimeout(() => ipcRenderer.removeListener('stream-audio', onAudio), 600000);
+
+    if (!contentEl) { hideTyping(); contentEl = addMsg('nyxia', full); }
+    contentEl.textContent = full;
+    attachFeedbackBtn(contentEl.parentElement, _lastUserMsg, full);
+    chatHistory.push({ role: 'assistant', content: full });
+    ipcRenderer.invoke('save-history', chatHistory);
+    ipcRenderer.invoke('broadcast-chat-message', { userMsg: _lastUserMsg, reply: full }).catch(() => {});
+    ipcRenderer.invoke('avatar-react', { reply: full });
+    setCompanionState('excited');
+    setTimeout(() => setCompanionState('idle'), 4000);
+    // Signal that no more audio chunks are coming (after in-flight ones land)
+    streamDone = true;
+    isStreaming = false;
+    // If nothing is playing and queue is empty, resume VAD immediately
+    if (!audioPlaying && audioQueue.length === 0) {
+      vadSpeaking = false;
+      if (voiceMode) updateLiveBtn('listening');
+    }
+  };
+  const onError = (_, err) => {
+    ipcRenderer.removeListener('stream-token',    onToken);
+    ipcRenderer.removeListener('stream-audio',    onAudio);
+    ipcRenderer.removeListener('stream-tts-text', onTTSText);
+    ipcRenderer.removeListener('stream-done',     onDone);
+    ipcRenderer.removeListener('stream-error',    onError);
+    hideTyping(); setCompanionState('idle');
+    addMsg('nyxia', `Connection issue~ (${err})`);
+    isStreaming  = false;
+    vadSpeaking  = false;
+    if (voiceMode) updateLiveBtn('listening');
+  };
+  const onCouncil = (_, names) => {
+    const el = document.getElementById('typing');
+    if (el) el.querySelector('.msg-label').textContent = `Nyxia ✦ consulting ${names.join(', ')}…`;
+  };
+  // Purge any stale listeners from a previous send before registering new ones
+  ipcRenderer.removeAllListeners('stream-token');
+  ipcRenderer.removeAllListeners('stream-audio');
+  ipcRenderer.removeAllListeners('stream-tts-text');
+  ipcRenderer.removeAllListeners('stream-done');
+  ipcRenderer.removeAllListeners('stream-error');
+  ipcRenderer.removeAllListeners('council-thinking');
+
+  ipcRenderer.on('council-thinking', onCouncil);
+  ipcRenderer.on('stream-token',    onToken);
+  ipcRenderer.on('stream-audio',    onAudio);
+  ipcRenderer.on('stream-tts-text', onTTSText);
+  ipcRenderer.on('stream-done',     (e, f)   => { ipcRenderer.removeListener('council-thinking', onCouncil); onDone(e, f); });
+  ipcRenderer.on('stream-error',    (e, err) => { ipcRenderer.removeListener('council-thinking', onCouncil); onError(e, err); });
+  ipcRenderer.send('claude-stream', chatHistory, systemPrompt);
+}
+
+// ── Provider / Ollama status ─────────────────────────────────────────────────
+function updateProviderStatus(ollama, model) {
+  const dot = document.getElementById('sys-ollama-dot');
+  const val = document.getElementById('sys-ollama-val');
+  const btn = document.getElementById('sys-ollama-restart');
+  const mdl = document.getElementById('sys-model-val');
+  if (!dot) return;
+  if (ollama) {
+    dot.style.background = '#4ade80';
+    val.textContent = 'online';
+    btn.style.display = 'none';
+  } else {
+    dot.style.background = '#ef4444';
+    val.textContent = 'offline → Claude';
+    btn.style.display = 'inline-block';
+  }
+  if (model && mdl) mdl.textContent = model;
+}
+
+function restartOllama() {
+  document.getElementById('sys-ollama-val').textContent = 'restarting…';
+  ipcRenderer.invoke('restart-ollama');
+}
+
+ipcRenderer.on('chatterbox-status', (_, data) => {
+  const dot = document.getElementById('sys-chatterbox-dot');
+  const val = document.getElementById('sys-chatterbox-val');
+  if (!dot) return;
+  if (data.ready) {
+    dot.style.background = '#4ade80';
+    dot.style.animation = 'pulse 2s infinite';
+  } else {
+    dot.style.background = data.label === 'loading…' ? '#facc15' : '#ef4444';
+    dot.style.animation = data.label === 'loading…' ? 'pulse 1s infinite' : 'none';
+  }
+  val.textContent = data.label || '—';
+});
+
+ipcRenderer.on('provider-status', (_, data) => {
+  const cfg = ipcRenderer.sendSync ? null : null; // just use data
+  updateProviderStatus(data.ollama !== false, data.model || null);
+});
+
+// Poll Ollama status on open
+(async () => {
+  const cfg = await ipcRenderer.invoke('get-config').catch(() => null);
+  const keys = cfg?.keys || {};
+  const isOllama = keys.provider === 'openai';
+  const model = keys.chatModel || (keys.provider === 'anthropic' ? 'Claude' : '—');
+  updateProviderStatus(!isOllama || true, model); // optimistic; error will correct it
+})();
+
+// Poll Chatterbox status on open, then keep listening for updates
+(async () => {
+  const status = await ipcRenderer.invoke('get-chatterbox-status').catch(() => null);
+  if (status) {
+    const dot = document.getElementById('sys-chatterbox-dot');
+    const val = document.getElementById('sys-chatterbox-val');
+    if (dot) {
+      if (status.ready) {
+        dot.style.background = '#4ade80'; dot.style.animation = 'pulse 2s infinite';
+      } else {
+        dot.style.background = status.label === 'loading…' ? '#facc15' : '#ef4444';
+        dot.style.animation = status.label === 'loading…' ? 'pulse 1s infinite' : 'none';
+      }
+      val.textContent = status.label || '—';
+    }
+  }
+})();
+</script>
+</body>
+</html>

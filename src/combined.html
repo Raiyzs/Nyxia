@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' 'unsafe-inline'">
+<link rel="stylesheet" href="../node_modules/xterm/css/xterm.css">
+<title>Nyxia</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+
+  /* ── 1. App border (outermost frame) ─────────────────────────────────────── */
+  #titlebar {
+    position: absolute; top: 0; left: 0; right: 0; height: 40px; z-index: 10;
+    background: rgba(8,3,18,0.97);
+    border: 1px solid rgba(168,85,247,0.4);
+    border-radius: 18px 18px 0 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; cursor: grab;
+  }
+  #titlebar:active { cursor: grabbing; }
+  #titlebar-name {
+    font-size: 13px; font-weight: 800;
+    color: #c084fc; letter-spacing: 3px; user-select: none;
+  }
+  #titlebar-btns { display: flex; gap: 6px; }
+  .tbtn {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12);
+    color: #6b5f7a; cursor: pointer; font-size: 12px;
+    display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  }
+  .tbtn:hover { color: #c084fc; border-color: rgba(168,85,247,0.5); }
+
+  #body {
+    position: absolute; top: 76px; left: 0; right: 0; bottom: 0;
+    overflow: hidden;
+    background: rgba(4,1,12,0.98);
+    border: 1px solid rgba(168,85,247,0.4);
+    border-top: none; border-radius: 0 0 18px 18px;
+  }
+
+  /* ── Navbar ──────────────────────────────────────────────────────────────── */
+  #navbar {
+    position: absolute; top: 40px; left: 0; right: 0; height: 36px; z-index: 9;
+    background: rgba(8,3,15,0.98);
+    border-left: 1px solid rgba(168,85,247,0.4);
+    border-right: 1px solid rgba(168,85,247,0.4);
+    border-bottom: 1px solid rgba(0,212,255,0.15);
+    display: flex; align-items: stretch; padding: 0 8px; gap: 2px;
+  }
+  .ntab {
+    padding: 0 16px; font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: #4a3a6a; background: transparent; border: none; cursor: pointer;
+    border-bottom: 2px solid transparent; transition: all 0.15s;
+    display: flex; align-items: center; gap: 6px; user-select: none;
+  }
+  .ntab:hover { color: #8b7aaa; }
+  .ntab.active { color: #00d4ff; border-bottom-color: #00d4ff; text-shadow: 0 0 8px rgba(0,212,255,0.4); }
+  .ntab .ticon { font-size: 13px; opacity: 0.7; }
+  .ntab.active .ticon { opacity: 1; }
+
+  /* ── 2. Avatar pane wrapper — absolute, top+bottom anchored ─────────────── */
+  #avatar-wrapper {
+    position: absolute;
+    top: 7px; bottom: 7px; left: 7px;
+    /* width set by JS */
+    border: 1px solid rgba(168,85,247,0.35);
+    border-radius: 12px;
+    overflow: hidden;
+    background: #08030f;
+  }
+
+  /* ── 3. Right pane wrapper — absolute, top+bottom anchored ──────────────── */
+  #right-wrapper {
+    position: absolute;
+    top: 7px; bottom: 7px; right: 7px;
+    /* left set by JS */
+    border: 1px solid rgba(168,85,247,0.35);
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(8,3,18,0.97);
+  }
+  .tab-panel { position: absolute; inset: 0; }
+  #home-panel {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(0,212,255,0.25); font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+  }
+  #home-panel::after { content: '✦ HOME'; }
+  #terminal-panel {
+    position: absolute; inset: 0;
+    background: #0a0612;
+    padding: 6px;
+  }
+  #xterm-container {
+    width: 100%; height: 100%;
+  }
+
+  webview { border: none; position: absolute; inset: 0; }
+
+  /* ── Chat overlay ────────────────────────────────────────────────────────── */
+  #chat-overlay {
+    position: absolute; z-index: 40;
+    display: none; flex-direction: column;
+    border: 1px solid rgba(168,85,247,0.65);
+    border-radius: 12px;
+    background: rgba(0,212,255,0.06);
+    box-shadow: 0 0 0 1px rgba(0,212,255,0.12), 0 0 40px rgba(168,85,247,0.14), 0 16px 48px rgba(0,0,0,0.55);
+    min-width: 280px; min-height: 320px;
+    overflow: hidden;
+  }
+  #chat-ov-header {
+    height: 32px; flex-shrink: 0;
+    background: rgba(168,85,247,0.07);
+    border-bottom: 1px solid rgba(168,85,247,0.2);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px; cursor: grab; user-select: none;
+  }
+  #chat-ov-header:active { cursor: grabbing; }
+  #chat-ov-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: #c084fc; }
+  #chat-ov-close {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+    color: #6b5f7a; cursor: pointer; font-size: 11px;
+    display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  }
+  #chat-ov-close:hover { color: #c084fc; border-color: rgba(168,85,247,0.5); }
+  #chat-ov-body { position: relative; flex: 1; min-height: 0; }
+  /* Resize handles */
+  .ov-rsz { position: absolute; z-index: 5; }
+  #ov-rsz-e  { top: 0; right: 0; width: 6px; bottom: 0; cursor: ew-resize; }
+  #ov-rsz-s  { bottom: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
+  #ov-rsz-se {
+    bottom: 0; right: 0; width: 16px; height: 16px; cursor: nwse-resize;
+  }
+  #ov-rsz-se::after {
+    content: ''; position: absolute; bottom: 4px; right: 4px;
+    width: 7px; height: 7px;
+    border-right: 2px solid rgba(168,85,247,0.45);
+    border-bottom: 2px solid rgba(168,85,247,0.45);
+    border-radius: 1px;
+  }
+  /* FAB toggle */
+  #chat-fab {
+    position: absolute; bottom: 18px; right: 18px; z-index: 50;
+    width: 44px; height: 44px; border-radius: 50%;
+    border: 1.5px solid rgba(168,85,247,0.7);
+    background: transparent;
+    color: #00d4ff; font-size: 17px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 14px rgba(0,212,255,0.22), inset 0 0 10px rgba(168,85,247,0.05);
+    transition: all 0.2s;
+  }
+  #chat-fab:hover { border-color: rgba(0,212,255,0.8); box-shadow: 0 0 22px rgba(0,212,255,0.42); }
+  #chat-fab.active { border-color: rgba(0,212,255,0.9); box-shadow: 0 0 24px rgba(0,212,255,0.5), inset 0 0 12px rgba(0,212,255,0.1); }
+
+  /* ── Browser tab ─────────────────────────────────────────────────────────── */
+  #browser-bar {
+    position: absolute; top: 0; left: 0; right: 0; height: 40px;
+    background: rgba(8,3,15,0.98);
+    border-bottom: 1px solid rgba(168,85,247,0.2);
+    display: flex; align-items: center; gap: 5px; padding: 0 8px;
+    z-index: 1;
+  }
+  .br-btn {
+    width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0;
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+    color: #6b5f7a; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  }
+  .br-btn:hover:not(:disabled) { color: #c084fc; border-color: rgba(168,85,247,0.5); }
+  .br-btn:disabled { opacity: 0.3; cursor: default; }
+  #br-url {
+    flex: 1; height: 28px; padding: 0 10px;
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(168,85,247,0.25);
+    border-radius: 6px; color: #e0d0ff; font-size: 12px; outline: none;
+    transition: border-color 0.15s;
+  }
+  #br-url:focus { border-color: rgba(168,85,247,0.6); background: rgba(255,255,255,0.07); }
+  #browser-view { position: absolute; top: 40px; left: 0; right: 0; bottom: 0; }
+
+  /* ── Vertical splitter ───────────────────────────────────────────────────── */
+  #split {
+    position: absolute;
+    top: 7px; bottom: 7px;
+    /* left set by JS */
+    width: 9px; cursor: ew-resize; background: transparent;
+  }
+  #split::after {
+    content: ''; position: absolute;
+    top: 15%; bottom: 15%; left: 50%;
+    width: 1px; transform: translateX(-50%);
+    background: rgba(168,85,247,0.2);
+    transition: background 0.15s;
+  }
+  #split:hover::after, #split.active::after { background: rgba(168,85,247,0.75); }
+
+  /* ── Bottom-edge resize handle ───────────────────────────────────────────── */
+  #resize-bottom {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 8px;
+    cursor: ns-resize; z-index: 20; border-radius: 0 0 18px 18px;
+  }
+  #resize-bottom:hover { background: rgba(168,85,247,0.2); }
+</style>
+</head>
+<body>
+
+<div id="titlebar">
+  <span id="titlebar-name">✦ NYXIA</span>
+  <div id="titlebar-btns">
+    <button class="tbtn" id="btn-system"   title="System / Stats">◈</button>
+    <button class="tbtn" id="btn-settings" title="Settings">⚙</button>
+    <button class="tbtn" id="btn-min">—</button>
+    <button class="tbtn" id="btn-close">✕</button>
+  </div>
+</div>
+
+<nav id="navbar">
+  <button class="ntab" data-tab="chat"><span class="ticon">💬</span>Chat</button>
+  <button class="ntab active" data-tab="home"><span class="ticon">⌂</span>Home</button>
+  <button class="ntab" data-tab="browser"><span class="ticon">◉</span>Browser</button>
+  <button class="ntab" data-tab="terminal"><span class="ticon">$</span>Terminal</button>
+</nav>
+
+<div id="body">
+  <div id="avatar-wrapper">
+    <webview id="avatar-pane" src="./index.html" nodeintegration webpreferences="contextIsolation=false"></webview>
+  </div>
+  <div id="split"></div>
+  <div id="right-wrapper">
+    <div id="tab-home" class="tab-panel">
+      <div id="home-panel"></div>
+    </div>
+    <div id="tab-browser" class="tab-panel" style="display:none">
+      <div id="browser-bar">
+        <button class="br-btn" id="br-back"   title="Back"    disabled>&#8592;</button>
+        <button class="br-btn" id="br-fwd"    title="Forward" disabled>&#8594;</button>
+        <button class="br-btn" id="br-reload" title="Reload">&#8635;</button>
+        <input id="br-url" type="text" spellcheck="false" placeholder="Search or enter address...">
+      </div>
+      <webview id="browser-view" src="https://duckduckgo.com"></webview>
+    </div>
+    <div id="tab-terminal" class="tab-panel" style="display:none">
+      <div id="terminal-panel">
+        <div id="xterm-container"></div>
+      </div>
+    </div>
+  </div>
+  <!-- Chat overlay — floats above all tabs -->
+  <div id="chat-overlay">
+    <div id="chat-ov-header">
+      <span id="chat-ov-title">✦ CHAT</span>
+      <button id="chat-ov-close">✕</button>
+    </div>
+    <div id="chat-ov-body">
+      <webview id="chat-pane" src="./chat.html?combined=1&overlay=1" nodeintegration webpreferences="contextIsolation=false"></webview>
+    </div>
+    <div class="ov-rsz" id="ov-rsz-e"></div>
+    <div class="ov-rsz" id="ov-rsz-s"></div>
+    <div class="ov-rsz" id="ov-rsz-se"></div>
+  </div>
+  <button id="chat-fab" title="Toggle chat">💬</button>
+</div>
+<div id="resize-bottom"></div>
+
+<script>
+const { ipcRenderer } = require('electron');
+const avatarWrapper = document.getElementById('avatar-wrapper');
+const rightWrapper  = document.getElementById('right-wrapper');
+const avatarPane    = document.getElementById('avatar-pane');
+const chatPane      = document.getElementById('chat-pane');
+const splitBar      = document.getElementById('split');
+const body          = document.getElementById('body');
+
+// ── Chat overlay ──────────────────────────────────────────────────────────────
+let overlayX = null, overlayY = 20, overlayW = 390, overlayH = 540;
+const chatOverlay = document.getElementById('chat-overlay');
+const chatFab     = document.getElementById('chat-fab');
+const chatNavTab  = document.querySelector('.ntab[data-tab="chat"]');
+
+function applyOverlayPos() {
+  chatOverlay.style.left   = overlayX + 'px';
+  chatOverlay.style.top    = overlayY + 'px';
+  chatOverlay.style.width  = overlayW + 'px';
+  chatOverlay.style.height = overlayH + 'px';
+}
+function showOverlay() {
+  if (overlayX === null) overlayX = Math.max(10, body.clientWidth - overlayW - 60);
+  applyOverlayPos();
+  chatOverlay.style.display = 'flex';
+  chatFab.classList.add('active');
+  chatNavTab.classList.add('active');
+}
+function hideOverlay() {
+  chatOverlay.style.display = 'none';
+  chatFab.classList.remove('active');
+  chatNavTab.classList.remove('active');
+}
+function toggleOverlay() {
+  chatOverlay.style.display === 'none' ? showOverlay() : hideOverlay();
+}
+chatFab.addEventListener('click', toggleOverlay);
+document.getElementById('chat-ov-close').addEventListener('click', hideOverlay);
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.ntab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'chat') { toggleOverlay(); return; }
+    document.querySelectorAll('.ntab:not([data-tab="chat"])').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).style.display = '';
+  });
+});
+
+const PADDING = 7;  // #body padding (both sides)
+const SPLIT_W = 9;  // #split width
+
+// ── Init: restore saved avatar pane width ────────────────────────────────────
+let avatarW = 420;
+ipcRenderer.invoke('get-pane-split').then(w => {
+  if (w) avatarW = w;
+  applyLayout();
+});
+
+// ── Apply layout ─────────────────────────────────────────────────────────────
+// Wrappers use position:absolute with top/bottom anchored — heights are automatic.
+// JS only sets the horizontal positions (left/width).
+// webview { position:absolute; inset:0 } fills wrapper interior automatically.
+function applyLayout() {
+  avatarWrapper.style.width = avatarW + 'px';
+  splitBar.style.left       = (PADDING + avatarW) + 'px';
+  rightWrapper.style.left    = (PADDING + avatarW + SPLIT_W) + 'px';
+}
+
+document.addEventListener('DOMContentLoaded', applyLayout);
+window.addEventListener('resize', applyLayout);
+
+// ── Overlay drag/resize ───────────────────────────────────────────────────────
+let ovMode = null, ovX0 = 0, ovY0 = 0, ovL0 = 0, ovT0 = 0, ovW0 = 0, ovH0 = 0;
+function ovStart(e, m) {
+  ovMode = m; ovX0 = e.screenX; ovY0 = e.screenY;
+  ovL0 = overlayX || 0; ovT0 = overlayY; ovW0 = overlayW; ovH0 = overlayH;
+  e.preventDefault(); e.stopPropagation();
+}
+document.getElementById('chat-ov-header').addEventListener('mousedown', e => ovStart(e, 'move'));
+document.getElementById('ov-rsz-e').addEventListener('mousedown',  e => ovStart(e, 'e'));
+document.getElementById('ov-rsz-s').addEventListener('mousedown',  e => ovStart(e, 's'));
+document.getElementById('ov-rsz-se').addEventListener('mousedown', e => ovStart(e, 'se'));
+
+// ── Unified drag state ────────────────────────────────────────────────────────
+let mode = null, startX = 0, startY = 0;
+
+document.getElementById('titlebar').addEventListener('mousedown', e => {
+  if (e.target.tagName === 'BUTTON') return;
+  mode = 'move'; startX = e.screenX; startY = e.screenY;
+});
+
+splitBar.addEventListener('mousedown', e => {
+  mode = 'split'; startX = e.screenX;
+  splitBar.classList.add('active');
+  e.preventDefault();
+});
+
+document.getElementById('resize-bottom').addEventListener('mousedown', e => {
+  mode = 'resize-h'; startY = e.screenY; e.preventDefault();
+});
+
+window.addEventListener('mousemove', e => {
+  if (ovMode) {
+    const dx = e.screenX - ovX0, dy = e.screenY - ovY0;
+    if (ovMode === 'move') { overlayX = ovL0 + dx; overlayY = ovT0 + dy; }
+    if (ovMode === 'e'  || ovMode === 'se') overlayW = Math.max(280, ovW0 + dx);
+    if (ovMode === 's'  || ovMode === 'se') overlayH = Math.max(320, ovH0 + dy);
+    applyOverlayPos();
+    return;
+  }
+  if (!mode) return;
+
+  if (mode === 'move') {
+    ipcRenderer.invoke('move-combined', e.screenX - startX, e.screenY - startY);
+    startX = e.screenX; startY = e.screenY;
+
+  } else if (mode === 'split') {
+    const dx  = e.screenX - startX;
+    const max = body.clientWidth - PADDING * 2 - SPLIT_W - 280;  // min chat width 280
+    avatarW   = Math.max(180, Math.min(max, avatarW + dx));
+    startX    = e.screenX;
+    applyLayout();
+
+  } else if (mode === 'resize-h') {
+    const dy = e.screenY - startY;
+    if (dy !== 0) { ipcRenderer.invoke('resize-combined-h', dy); startY = e.screenY; }
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  ovMode = null;
+  if (mode === 'split') {
+    splitBar.classList.remove('active');
+    ipcRenderer.invoke('save-pane-split', avatarW);
+  }
+  mode = null;
+});
+
+// ── Browser tab ───────────────────────────────────────────────────────────────
+const browserView = document.getElementById('browser-view');
+const brUrl       = document.getElementById('br-url');
+const brBack      = document.getElementById('br-back');
+const brFwd       = document.getElementById('br-fwd');
+const brReload    = document.getElementById('br-reload');
+
+function browserNavigate(raw) {
+  let url = raw.trim();
+  if (!url) return;
+  if (!/^https?:\/\//i.test(url)) {
+    if (/^[\w-]+\.[a-z]{2,}(\/|$)/i.test(url)) url = 'https://' + url;
+    else url = 'https://duckduckgo.com/?q=' + encodeURIComponent(url);
+  }
+  browserView.loadURL(url);
+}
+
+brUrl.addEventListener('keydown', e => { if (e.key === 'Enter') browserNavigate(brUrl.value); });
+brBack.addEventListener('click',   () => browserView.goBack());
+brFwd.addEventListener('click',    () => browserView.goForward());
+brReload.addEventListener('click', () => brReload.dataset.loading === '1' ? browserView.stop() : browserView.reload());
+
+browserView.addEventListener('did-start-loading',  () => { brReload.innerHTML = '&#x2715;'; brReload.dataset.loading = '1'; });
+browserView.addEventListener('did-stop-loading',   () => { brReload.innerHTML = '&#8635;';  brReload.dataset.loading = '0'; updateBrNav(); });
+browserView.addEventListener('did-navigate',        e  => { brUrl.value = e.url;            updateBrNav(); });
+browserView.addEventListener('did-navigate-in-page', e => { if (e.isMainFrame) { brUrl.value = e.url; updateBrNav(); } });
+
+function updateBrNav() {
+  brBack.disabled = !browserView.canGoBack();
+  brFwd.disabled  = !browserView.canGoForward();
+}
+
+document.getElementById('btn-system').onclick   = () => chatPane.send('toggle-system');
+document.getElementById('btn-settings').onclick = () => chatPane.send('toggle-settings');
+document.getElementById('btn-min').onclick       = () => ipcRenderer.invoke('minimize-combined');
+document.getElementById('btn-close').onclick     = () => ipcRenderer.invoke('close-app');
+
+// ── Relay IPC from main → correct webview ────────────────────────────────────
+const AVATAR_CH = [
+  'brain-fire', 'avatar-react', 'mood-update',
+  'mind-window-change', 'mind-file-change', 'mind-clipboard-change',
+  'mind-thought', 'mind-high-load',
+  'speak-bubble', 'companion-state', 'appearance-updated', 'model-rotation',
+  'chat-bounds', 'chat-closed', 'backend-event',
+];
+const CHAT_CH = [
+  'nyxia-proactive', 'provider-status', 'chatterbox-status', 'mind-context',
+  'mind-understanding', 'system-prompt-updated', 'nyxia-topic',
+];
+
+avatarPane.addEventListener('dom-ready', () => {
+  AVATAR_CH.forEach(ch => ipcRenderer.on(ch, (_, ...a) => avatarPane.send(ch, ...a)));
+});
+chatPane.addEventListener('dom-ready', () => {
+  CHAT_CH.forEach(ch => ipcRenderer.on(ch, (_, ...a) => chatPane.send(ch, ...a)));
+});
+
+// Register browser webview with main process so it can drive it directly
+function sendBrowserViewId() {
+  const id = browserView.getWebContentsId();
+  if (id !== -1) ipcRenderer.send('browser-view-id', id);
+}
+browserView.addEventListener('dom-ready', sendBrowserViewId);
+// Fallback: send after 3s in case dom-ready fires before main is listening
+setTimeout(sendBrowserViewId, 3000);
+
+// Main process asks us to show the browser tab (e.g. when Nyxia navigates)
+ipcRenderer.on('browser-show', () => {
+  document.querySelectorAll('.ntab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.style.display = 'none');
+  document.querySelector('.ntab[data-tab="browser"]').classList.add('active');
+  document.getElementById('tab-browser').style.display = '';
+});
+
+// ── Hot reload ────────────────────────────────────────────────────────────────
+ipcRenderer.on('hot-reload', (_, file) => {
+  if (file === 'index.html') { avatarPane.reload(); }
+  else if (file === 'chat.html') { chatPane.reload(); }
+});
+
+// ── Terminal (xterm.js + node-pty) ───────────────────────────────────────────
+const { Terminal } = require('../node_modules/xterm/lib/xterm.js');
+const { FitAddon } = require('../node_modules/xterm-addon-fit/lib/xterm-addon-fit.js');
+
+let term = null;
+let fitAddon = null;
+let termReady = false;
+
+function initTerminal() {
+  if (termReady) return;
+  termReady = true;
+
+  term = new Terminal({
+    theme: {
+      background:  '#0a0612',
+      foreground:  '#e0d0ff',
+      cursor:      '#c084fc',
+      cursorAccent:'#0a0612',
+      selectionBackground: 'rgba(168,85,247,0.3)',
+      black:   '#1a0a2e', red:     '#ff6b9d', green:   '#00d4ff',
+      yellow:  '#c084fc', blue:    '#7c3aed', magenta: '#a855f7',
+      cyan:    '#06b6d4', white:   '#e0d0ff',
+      brightBlack:   '#4a3a6a', brightRed:     '#ff8fb3',
+      brightGreen:   '#40e0ff', brightYellow:  '#d0a0ff',
+      brightBlue:    '#9d6ef8', brightMagenta: '#c084fc',
+      brightCyan:    '#22d3ee', brightWhite:   '#f5f0ff',
+    },
+    fontFamily: 'monospace',
+    fontSize: 13,
+    lineHeight: 1.3,
+    cursorBlink: true,
+    scrollback: 2000,
+  });
+
+  fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+
+  const container = document.getElementById('xterm-container');
+  term.open(container);
+  fitAddon.fit();
+
+  const dims = { cols: term.cols, rows: term.rows };
+  ipcRenderer.send('pty-start', dims);
+
+  term.onData(data => ipcRenderer.send('pty-input', data));
+
+  ipcRenderer.on('pty-data', (_, data) => term.write(data));
+  ipcRenderer.on('pty-exit', ()        => term.write('\r\n[shell exited]\r\n'));
+
+  // Resize PTY when terminal panel resizes
+  const ro = new ResizeObserver(() => {
+    fitAddon.fit();
+    ipcRenderer.send('pty-resize', { cols: term.cols, rows: term.rows });
+  });
+  ro.observe(container);
+}
+
+// Init terminal when Terminal tab is first clicked
+document.querySelector('.ntab[data-tab="terminal"]').addEventListener('click', () => {
+  setTimeout(initTerminal, 50); // slight delay so panel is visible before fit
+});
+</script>
+
+</body>
+</html>
