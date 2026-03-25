@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#08030f"/>
+      <stop offset="100%" style="stop-color:#0a0520"/>
+    </linearGradient>
+    <linearGradient id="nGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff"/>
+      <stop offset="100%" style="stop-color:#c084fc"/>
+    </linearGradient>
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:0.6"/>
+      <stop offset="100%" style="stop-color:#c084fc;stop-opacity:0.6"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="100" fill="url(#bgGrad)"/>
+
+  <!-- Outer ring -->
+  <circle cx="100" cy="100" r="88" fill="none" stroke="url(#ringGrad)" stroke-width="1"/>
+
+  <!-- Inner ring -->
+  <circle cx="100" cy="100" r="72" fill="none" stroke="url(#ringGrad)" stroke-width="0.5" stroke-dasharray="4 6"/>
+
+  <!-- N letter -->
+  <text x="100" y="128"
+    font-family="Georgia, serif"
+    font-size="90"
+    font-weight="700"
+    text-anchor="middle"
+    fill="url(#nGrad)"
+    filter="url(#glow)"
+    letter-spacing="-2">N</text>
+
+  <!-- Corner dots -->
+  <circle cx="100" cy="24" r="2" fill="#c084fc" opacity="0.8"/>
+  <circle cx="176" cy="100" r="2" fill="#00d4ff" opacity="0.8"/>
+  <circle cx="100" cy="176" r="2" fill="#c084fc" opacity="0.8"/>
+  <circle cx="24" cy="100" r="2" fill="#00d4ff" opacity="0.8"/>
+</svg>

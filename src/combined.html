@@ -83,11 +83,54 @@
   }
   .tab-panel { position: absolute; inset: 0; }
   #home-panel {
-    width: 100%; height: 100%;
-    display: flex; align-items: center; justify-content: center;
-    color: rgba(0,212,255,0.25); font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
+    width: 100%; height: 100%; display: flex; flex-direction: column;
+    overflow-y: auto; overflow-x: hidden;
+    padding: 0; align-items: unset; justify-content: unset;
   }
-  #home-panel::after { content: '✦ HOME'; }
+  #home-panel::-webkit-scrollbar { width: 4px; }
+  #home-panel::-webkit-scrollbar-track { background: transparent; }
+  #home-panel::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.2); border-radius: 2px; }
+  #home-banner {
+    padding: 14px 20px 10px; border-bottom: 1px solid rgba(168,85,247,0.15);
+    flex-shrink: 0;
+  }
+  #home-banner img { height: 32px; opacity: 0.8; }
+  .dash-section { padding: 12px 16px; border-bottom: 1px solid rgba(168,85,247,0.1); }
+  .dash-label {
+    font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+    color: rgba(192,132,252,0.45); margin-bottom: 10px;
+  }
+  .mood-row {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 5px;
+  }
+  .mood-name { font-size: 10px; color: #5a4a7a; width: 70px; flex-shrink: 0; }
+  .mood-bar-track {
+    flex: 1; height: 3px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden;
+  }
+  .mood-bar-fill { height: 100%; border-radius: 2px; transition: width 0.9s ease; min-width: 2px; }
+  .mood-val { font-size: 9px; color: #3a2a5a; width: 28px; text-align: right; flex-shrink: 0; }
+  .mood-curiosity  .mood-bar-fill { background: #00d4ff; box-shadow: 0 0 4px rgba(0,212,255,0.5); }
+  .mood-attachment .mood-bar-fill { background: #c084fc; box-shadow: 0 0 4px rgba(192,132,252,0.5); }
+  .mood-creativity .mood-bar-fill { background: #f472b6; box-shadow: 0 0 4px rgba(244,114,182,0.4); }
+  .mood-empathy    .mood-bar-fill { background: #a78bfa; box-shadow: 0 0 4px rgba(167,139,250,0.4); }
+  .mood-motor      .mood-bar-fill { background: #34d399; box-shadow: 0 0 4px rgba(52,211,153,0.3); }
+  .mood-tiredness  .mood-bar-fill { background: #4a3a6a; }
+  .mood-fear       .mood-bar-fill { background: #ef4444; box-shadow: 0 0 4px rgba(239,68,68,0.4); }
+  .self-field { margin-bottom: 8px; }
+  .self-key {
+    font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+    color: rgba(192,132,252,0.4); margin-bottom: 3px;
+  }
+  .self-val { font-size: 11px; color: #a080c0; line-height: 1.4; }
+  .tension-track { height: 3px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+  .tension-fill { height: 100%; border-radius: 2px; transition: width 0.9s ease; background: linear-gradient(90deg, #00d4ff, #c084fc); }
+  .dash-stats { display: flex; gap: 10px; }
+  .stat-box {
+    flex: 1; padding: 8px 6px; text-align: center;
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(168,85,247,0.1); border-radius: 6px;
+  }
+  .stat-num { font-size: 20px; font-weight: 700; color: #00d4ff; letter-spacing: 1px; }
+  .stat-lbl { font-size: 8px; letter-spacing: 1.5px; text-transform: uppercase; color: #3a2a5a; margin-top: 2px; }
   #terminal-panel {
     position: absolute; inset: 0;
     background: #0a0612;
@@ -144,6 +187,7 @@
   /* FAB toggle */
   #chat-fab {
     position: absolute; bottom: 18px; right: 18px; z-index: 50;
+    overflow: visible;
     width: 44px; height: 44px; border-radius: 50%;
     border: 1.5px solid rgba(168,85,247,0.7);
     background: transparent;
@@ -154,6 +198,17 @@
   }
   #chat-fab:hover { border-color: rgba(0,212,255,0.8); box-shadow: 0 0 22px rgba(0,212,255,0.42); }
   #chat-fab.active { border-color: rgba(0,212,255,0.9); box-shadow: 0 0 24px rgba(0,212,255,0.5), inset 0 0 12px rgba(0,212,255,0.1); }
+  #chat-fab.notify::after {
+    content: ''; position: absolute; top: 4px; right: 4px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #c084fc;
+    box-shadow: 0 0 6px rgba(192,132,252,0.9), 0 0 12px rgba(192,132,252,0.5);
+    animation: fab-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes fab-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.5; transform: scale(0.7); }
+  }
 
   /* ── Browser tab ─────────────────────────────────────────────────────────── */
   #browser-bar {
@@ -230,7 +285,78 @@
   <div id="split"></div>
   <div id="right-wrapper">
     <div id="tab-home" class="tab-panel">
-      <div id="home-panel"></div>
+      <div id="home-panel">
+        <div id="home-banner"><img src="../assets/banner.svg" alt="Nyxia"/></div>
+
+        <div class="dash-section">
+          <div class="dash-label">Mood State</div>
+          <div class="mood-row mood-curiosity">
+            <span class="mood-name">curiosity</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-curiosity" style="width:50%"></div></div>
+            <span class="mood-val" id="mval-curiosity">0.50</span>
+          </div>
+          <div class="mood-row mood-attachment">
+            <span class="mood-name">attachment</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-attachment" style="width:30%"></div></div>
+            <span class="mood-val" id="mval-attachment">0.30</span>
+          </div>
+          <div class="mood-row mood-creativity">
+            <span class="mood-name">creativity</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-creativity" style="width:40%"></div></div>
+            <span class="mood-val" id="mval-creativity">0.40</span>
+          </div>
+          <div class="mood-row mood-empathy">
+            <span class="mood-name">empathy</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-empathy" style="width:30%"></div></div>
+            <span class="mood-val" id="mval-empathy">0.30</span>
+          </div>
+          <div class="mood-row mood-motor">
+            <span class="mood-name">motor</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-motor" style="width:30%"></div></div>
+            <span class="mood-val" id="mval-motor">0.30</span>
+          </div>
+          <div class="mood-row mood-tiredness">
+            <span class="mood-name">tiredness</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-tiredness" style="width:0%"></div></div>
+            <span class="mood-val" id="mval-tiredness">0.00</span>
+          </div>
+          <div class="mood-row mood-fear">
+            <span class="mood-name">fear</span>
+            <div class="mood-bar-track"><div class="mood-bar-fill" id="mood-fear" style="width:0%"></div></div>
+            <span class="mood-val" id="mval-fear">0.00</span>
+          </div>
+        </div>
+
+        <div class="dash-section">
+          <div class="dash-label">Self-Model</div>
+          <div class="self-field">
+            <div class="self-key">Doing</div>
+            <div class="self-val" id="sm-doing">—</div>
+          </div>
+          <div class="self-field">
+            <div class="self-key">Feeling</div>
+            <div class="self-val" id="sm-feeling">—</div>
+          </div>
+          <div class="self-field">
+            <div class="self-key">Tension</div>
+            <div class="tension-track"><div class="tension-fill" id="sm-tension-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+
+        <div class="dash-section">
+          <div class="dash-label">Growth</div>
+          <div class="dash-stats">
+            <div class="stat-box">
+              <div class="stat-num" id="stat-sessions">—</div>
+              <div class="stat-lbl">Sessions</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-num">10.1</div>
+              <div class="stat-lbl">Phase</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="tab-browser" class="tab-panel" style="display:none">
       <div id="browser-bar">
@@ -274,7 +400,7 @@ const splitBar      = document.getElementById('split');
 const body          = document.getElementById('body');
 
 // ── Chat overlay ──────────────────────────────────────────────────────────────
-let overlayX = null, overlayY = 20, overlayW = 390, overlayH = 540;
+let overlayX = 0, overlayY = 0, overlayW = 390, overlayH = 540;
 const chatOverlay = document.getElementById('chat-overlay');
 const chatFab     = document.getElementById('chat-fab');
 const chatNavTab  = document.querySelector('.ntab[data-tab="chat"]');
@@ -285,8 +411,15 @@ function applyOverlayPos() {
   chatOverlay.style.width  = overlayW + 'px';
   chatOverlay.style.height = overlayH + 'px';
 }
+function setFabNotify(on) {
+  chatFab.classList.toggle('notify', on);
+}
+
 function showOverlay() {
-  if (overlayX === null) overlayX = Math.max(10, body.clientWidth - overlayW - 60);
+  setFabNotify(false);
+  // Always anchor: left of FAB (right:18px + wrapper right:7px + FAB width:44px + gap:8px), bottom-aligned
+  overlayX = Math.max(10, body.clientWidth - overlayW - 77);
+  overlayY = Math.max(10, body.clientHeight - overlayH - 25);
   applyOverlayPos();
   chatOverlay.style.display = 'flex';
   chatFab.classList.add('active');
@@ -478,6 +611,11 @@ ipcRenderer.on('browser-show', () => {
   document.getElementById('tab-browser').style.display = '';
 });
 
+// ── FAB notification badge ────────────────────────────────────────────────────
+ipcRenderer.on('nyxia-proactive', () => {
+  if (chatOverlay.style.display === 'none') setFabNotify(true);
+});
+
 // ── Hot reload ────────────────────────────────────────────────────────────────
 ipcRenderer.on('hot-reload', (_, file) => {
   if (file === 'index.html') { avatarPane.reload(); }
@@ -545,6 +683,54 @@ function initTerminal() {
 document.querySelector('.ntab[data-tab="terminal"]').addEventListener('click', () => {
   setTimeout(initTerminal, 50); // slight delay so panel is visible before fit
 });
+
+// ── Home Dashboard ────────────────────────────────────────────────────────────
+const MOOD_KEYS = ['curiosity','attachment','creativity','empathy','motor','tiredness','fear'];
+
+function applyMood(mood) {
+  for (const k of MOOD_KEYS) {
+    if (mood[k] === undefined) continue;
+    const v = Math.min(1, Math.max(0, mood[k]));
+    const bar = document.getElementById('mood-' + k);
+    const val = document.getElementById('mval-' + k);
+    if (bar) bar.style.width = (v * 100).toFixed(1) + '%';
+    if (val) val.textContent  = v.toFixed(2);
+  }
+}
+
+function applySelfModel(sm) {
+  const doing   = document.getElementById('sm-doing');
+  const feeling = document.getElementById('sm-feeling');
+  const tensBar = document.getElementById('sm-tension-bar');
+  const toString = v => {
+    if (!v) return '—';
+    if (typeof v !== 'object') return String(v);
+    const entries = Object.entries(v);
+    if (entries.every(([,x]) => typeof x === 'number'))
+      return entries.sort((a,b) => b[1]-a[1]).slice(0,2).map(([k]) => k).join(', ');
+    return entries.map(([,x]) => x).filter(x => typeof x === 'string').join(', ') || '—';
+  };
+  if (doing)   doing.textContent   = toString(sm.what_im_doing);
+  if (feeling) feeling.textContent = toString(sm.how_im_feeling);
+  if (tensBar) tensBar.style.width = (Math.min(1, Math.max(0, sm.inner_tension || 0)) * 100).toFixed(1) + '%';
+}
+
+// Initial load
+ipcRenderer.invoke('get-mood-state').then(mood => { if (mood) applyMood(mood); });
+ipcRenderer.invoke('get-self-model').then(sm   => { if (sm)   applySelfModel(sm); });
+ipcRenderer.invoke('load-user-profile').then(p => {
+  if (!p) return;
+  const el = document.getElementById('stat-sessions');
+  if (el) el.textContent = p.sessionCount || '0';
+});
+
+// Live mood updates from main process
+ipcRenderer.on('mood-update', (_, mood) => applyMood(mood));
+
+// Refresh self-model every 3 min (matches updateSelfModel cadence in main.js)
+setInterval(() => {
+  ipcRenderer.invoke('get-self-model').then(sm => { if (sm) applySelfModel(sm); });
+}, 3 * 60 * 1000);
 </script>
 
 </body>

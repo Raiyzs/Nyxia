@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" width="900" height="300">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#08030f"/>
+      <stop offset="60%" style="stop-color:#0a0520"/>
+      <stop offset="100%" style="stop-color:#080318"/>
+    </linearGradient>
+    <linearGradient id="nGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff"/>
+      <stop offset="100%" style="stop-color:#c084fc"/>
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#c084fc"/>
+      <stop offset="100%" style="stop-color:#a855f7"/>
+    </linearGradient>
+    <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:0.5"/>
+      <stop offset="100%" style="stop-color:#c084fc;stop-opacity:0.5"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="textGlow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="300" fill="url(#bgGrad)" rx="12"/>
+
+  <!-- Subtle grid lines -->
+  <line x1="0" y1="150" x2="900" y2="150" stroke="#c084fc" stroke-width="0.3" opacity="0.15"/>
+  <line x1="450" y1="0" x2="450" y2="300" stroke="#00d4ff" stroke-width="0.3" opacity="0.1"/>
+
+  <!-- Logo icon left -->
+  <circle cx="130" cy="150" r="90" fill="none" stroke="url(#ringGrad)" stroke-width="1"/>
+  <circle cx="130" cy="150" r="74" fill="none" stroke="url(#ringGrad)" stroke-width="0.5" stroke-dasharray="4 8"/>
+  <text x="130" y="192"
+    font-family="Georgia, serif"
+    font-size="110"
+    font-weight="700"
+    text-anchor="middle"
+    fill="url(#nGrad)"
+    filter="url(#glow)">N</text>
+
+  <!-- Divider line -->
+  <line x1="248" y1="70" x2="248" y2="230" stroke="url(#ringGrad)" stroke-width="0.8"/>
+
+  <!-- Nyxia text -->
+  <text x="310" y="178"
+    font-family="Georgia, serif"
+    font-size="96"
+    font-weight="700"
+    text-anchor="start"
+    fill="url(#textGrad)"
+    filter="url(#textGlow)"
+    letter-spacing="6">Nyxia</text>
+
+  <!-- Tagline -->
+  <text x="312" y="222"
+    font-family="'Courier New', monospace"
+    font-size="16"
+    text-anchor="start"
+    fill="#00d4ff"
+    opacity="0.7"
+    letter-spacing="3">AI COMPANION</text>
+
+  <!-- Corner accents -->
+  <circle cx="20" cy="20" r="2" fill="#c084fc" opacity="0.6"/>
+  <circle cx="880" cy="20" r="2" fill="#00d4ff" opacity="0.6"/>
+  <circle cx="20" cy="280" r="2" fill="#00d4ff" opacity="0.6"/>
+  <circle cx="880" cy="280" r="2" fill="#c084fc" opacity="0.6"/>
+
+  <!-- Top border accent -->
+  <line x1="0" y1="0" x2="900" y2="0" stroke="url(#nGrad)" stroke-width="2" rx="12"/>
+</svg>

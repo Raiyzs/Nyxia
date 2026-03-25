@@ -1,4 +1,6 @@
-#<img width="897" height="299" alt="image" src="https://github.com/user-attachments/assets/09f9bba9-a44f-4cc0-a99c-cbf9d3a0b2bb" />
+<p align="center">
+  <img src="assets/banner.svg" alt="Nyxia" width="900"/>
+</p>
 
 An Electron-based desktop AI companion with a 3D avatar, local voice, persistent memory, and awareness of your system.
 
@@ -68,4 +70,3 @@ Set your keys inside the app under **Settings** (gear icon). No `.env` file need
 - Agent loop with tool use (search, shell, browser, filesystem)
 - Multi-provider support — Claude, Gemini, Groq, Mistral, Ollama
 - PWA companion interface for phone
-# Nyxia

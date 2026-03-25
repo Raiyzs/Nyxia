@@ -322,6 +322,7 @@ function createCombinedWindow() {
     transparent: true, frame: false, alwaysOnTop: true,
     skipTaskbar: false, resizable: true, hasShadow: false,
     backgroundColor: '#00000000',
+    icon: path.join(__dirname, '..', 'assets', 'logo.png'),
     minWidth: 800, minHeight: 500,
     webPreferences: {
       nodeIntegration: true, contextIsolation: false,
@@ -470,7 +471,8 @@ async function ensureOllama() {
 }
 
 // ── TTS servers ───────────────────────────────────────────────────────────────
-const KOKORO_PORT     = 8883;                                // Kokoro — primary (fastest)
+const QWEN3_PORT      = 8884;                                // Qwen3-TTS — primary when GPU present
+const KOKORO_PORT     = 8883;                                // Kokoro — primary (fastest, CPU)
 const CHATTERBOX_PORT = 8881;                                // XTTS v2 — fallback (voice clone)
 const KOKORO_BIN      = '/var/home/kvoldnes/xtts-env/bin/python';
 const KOKORO_SRV      = '/var/home/kvoldnes/nyxia/kokoro_server.py';
@@ -900,7 +902,10 @@ function startHeartbeat() {
 
       console.log(`[heartbeat] delta="${delta.summary}" score=${score.toFixed(2)} canInterrupt=${canHeartbeatInterrupt()}`);
 
-      // Score is logged — interrupts wired in Phase 2
+      if (score >= 0.65 && canHeartbeatInterrupt()) {
+        _lastHeartbeatInterrupt = Date.now();
+        proactiveSpeak('heartbeat', delta.summary);
+      }
     } catch(e) {
       console.log('[heartbeat] error:', e.message);
     }
@@ -955,6 +960,18 @@ async function updateSelfModel() {
       const jsonMatch = result.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
+        // Flatten any nested objects to strings (LLM sometimes returns objects for string fields)
+        for (const k of ['what_im_doing','how_im_feeling','what_i_want_right_now','current_attention','pending_concern']) {
+          if (parsed[k] && typeof parsed[k] === 'object') {
+            const entries = Object.entries(parsed[k]);
+            if (entries.every(([,v]) => typeof v === 'number')) {
+              // Numeric mood object — take key with highest value
+              parsed[k] = entries.sort((a,b) => b[1]-a[1]).map(([k]) => k).slice(0,2).join(', ');
+            } else {
+              parsed[k] = entries.map(([,v]) => v).filter(v => typeof v === 'string').join(', ') || String(entries[0]?.[1] || '—');
+            }
+          }
+        }
         Object.assign(selfModel, parsed);
         selfModel.inner_tension = Math.min(1, Math.max(0, parseFloat(selfModel.inner_tension) || 0));
         selfModel.last_updated  = new Date().toISOString();
@@ -990,6 +1007,7 @@ app.whenReady().then(() => {
   try {
     const moodPath = path.join(app.getPath('userData'), 'nyxia-mood.json');
     if (fs.existsSync(moodPath)) Object.assign(moodState, JSON.parse(fs.readFileSync(moodPath, 'utf8')));
+    moodState.tiredness = 0; // reset tiredness each session — rest has happened
   } catch(_) {}
 
   // Restore self-model from last session (Phase 8)
@@ -1311,6 +1329,27 @@ ipcMain.handle('claude-chat', (_, messages, systemPrompt) => {
   });
 });
 
+// ── Mood → TTS instruction ────────────────────────────────────────────────────
+// Maps dominant mood dimension to a prosody instruction for Qwen3-TTS.
+const MOOD_INSTRUCTIONS = {
+  curiosity:  'speak with lively curiosity',
+  attachment: 'speak with warm affection',
+  creativity: 'speak with playful energy',
+  empathy:    'speak with gentle care',
+  tiredness:  'speak softly and tiredly',
+  fear:       'speak with quiet unease',
+  reasoning:  'speak calmly and thoughtfully',
+  motor:      'speak with energetic enthusiasm',
+};
+
+function moodToInstruction() {
+  const top = Object.entries(moodState)
+    .filter(([k]) => MOOD_INSTRUCTIONS[k])
+    .sort((a, b) => b[1] - a[1])[0];
+  if (!top || top[1] < 0.4) return '';
+  return MOOD_INSTRUCTIONS[top[0]];
+}
+
 // ── Shared TTS helper ────────────────────────────────────────────────────────
 // Chatterbox runs on CPU — serialize requests so sentences don't compete for the same core.
 // Each entry: { clean, idx, elKey, voiceId, event }
@@ -1321,8 +1360,10 @@ function _drainChatterbox() {
   if (_cbBusy || _cbQueue.length === 0) return;
   const { clean, idx, elKey, voiceId, event } = _cbQueue.shift();
   _cbBusy = true;
-  const t0   = Date.now();
-  const body = JSON.stringify({ text: clean });
+  const t0        = Date.now();
+  const instr     = moodToInstruction();
+  const body      = JSON.stringify({ text: clean });
+  const qwen3Body = JSON.stringify({ text: clean, ...(instr && { instruction: instr }) });
   let settled = false;
 
   const done = (label) => {
@@ -1343,11 +1384,11 @@ function _drainChatterbox() {
   };
 
   // Helper: try a local TTS port, resolve with Buffer on success, null on failure
-  function tryPort(port, timeoutMs) {
+  function tryPort(port, payload, timeoutMs) {
     return new Promise((resolve) => {
       const req = require('http').request({
         hostname: '127.0.0.1', port, path: '/tts', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
       }, (res) => {
         if (res.statusCode !== 200) { resolve(null); return; }
         const chunks = [];
@@ -1356,27 +1397,35 @@ function _drainChatterbox() {
       });
       req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
       req.on('error', () => resolve(null));
-      req.write(body); req.end();
+      req.write(payload); req.end();
     });
   }
 
-  // Priority: Kokoro (fast) → XTTS (voice clone) → ElevenLabs (cloud)
-  tryPort(KOKORO_PORT, 30000).then(buf => {
-    if (buf && done('kokoro')) {
+  // Priority: Qwen3 (GPU, voice clone) → Kokoro (CPU, fast) → XTTS (CPU, clone) → ElevenLabs
+  tryPort(QWEN3_PORT, qwen3Body, 30000).then(buf => {
+    if (buf && done('qwen3')) {
+      if (instr) console.log(`[qwen3-tts] instruction: "${instr}"`);
       if (!event.sender.isDestroyed())
         event.sender.send('stream-audio', buf.toString('base64'), idx);
       return;
     }
-    // Kokoro unavailable — try XTTS
-    return tryPort(CHATTERBOX_PORT, 180000).then(buf2 => {
-      if (buf2 && done('xtts')) {
+    return tryPort(KOKORO_PORT, body, 30000).then(buf2 => {
+      if (buf2 && done('kokoro')) {
         if (!event.sender.isDestroyed())
           event.sender.send('stream-audio', buf2.toString('base64'), idx);
         return;
       }
-      // Both local engines failed — ElevenLabs
-      console.warn(`[tts] both local engines failed for sentence ${idx} — ElevenLabs fallback`);
-      elFallback();
+      // Kokoro unavailable — try XTTS
+      return tryPort(CHATTERBOX_PORT, body, 180000).then(buf3 => {
+        if (buf3 && done('xtts')) {
+          if (!event.sender.isDestroyed())
+            event.sender.send('stream-audio', buf3.toString('base64'), idx);
+          return;
+        }
+        // All local engines failed — ElevenLabs
+        console.warn(`[tts] all local engines failed for sentence ${idx} — ElevenLabs fallback`);
+        elFallback();
+      });
     });
   });
 }
@@ -2152,6 +2201,7 @@ ipcMain.handle('get-system-prompt', () => buildSystemPrompt(loadPersonality(), l
 ipcMain.handle('load-user-profile', () => loadUserProfile());
 ipcMain.handle('load-self-data',    () => loadSelf());
 ipcMain.handle('get-self-model',    () => selfModel);
+ipcMain.handle('get-mood-state',    () => moodState);
 ipcMain.handle('get-thought-bank',  () => getThoughtBank());
 ipcMain.handle('write-feedback',    async (_, { query, response, correction }) => {
   try { await lanceMemory.writeFeedback(query, response, correction); return true; }
