@@ -2,16 +2,18 @@
 // POST /message → { text, history? } → { response, mode }
 // GET  /health  → { status: 'ok' }
 // GET  /        → serves pwa/index.html (PWA thin client)
-// Listens on 0.0.0.0:7337 (home network reachable)
-// No auth — local network only. Never expose to internet.
+// Listens on 127.0.0.1:12345 (local only)
+// No auth — never expose to internet.
 
 const http  = require('http');
 const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
+const logger = require('./utils/logger');
 const { browserExecute } = require('./browser');
 
 const PWA_DIR = path.join(__dirname, '..', 'pwa');
+const VIZ_DIR = '/var/home/kvoldnes/krix-brain';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -135,6 +137,7 @@ function startApiServer(port, deps) {
     loadConfig, loadPersonality, loadUserProfile, loadSelf,
     buildSystemPrompt, classifyMessage,
     querySearch, fetchPage, fsListDir, fsReadFile, fsWriteFile,
+    getMoodState,
   } = deps;
 
   _server = http.createServer(async (req, res) => {
@@ -256,14 +259,43 @@ function startApiServer(port, deps) {
       return;
     }
 
+    // Sphere visual state — live neuron/node data for sphere.html
+    if (req.method === 'GET' && req.url === '/sphere-state') {
+      try {
+        const { getVisualState } = require('./neural-sphere');
+        const visual = getVisualState();
+        visual.mood  = getMoodState?.() || {};
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(visual));
+      } catch(e) {
+        res.writeHead(500, CORS); res.end(JSON.stringify({ error: e.message }));
+      }
+      return;
+    }
+
+    // Static files — serve viz (sphere.html, cosmograph.html, soul-nodes.json, …)
+    if (req.method === 'GET' && req.url.startsWith('/viz/')) {
+      const rel      = req.url.slice(5); // strip /viz/
+      const filePath = path.join(VIZ_DIR, rel);
+      if (!filePath.startsWith(VIZ_DIR)) { res.writeHead(403); res.end(); return; }
+      fs.readFile(filePath, (err, data) => {
+        if (err) { res.writeHead(404); res.end('Not found'); return; }
+        const ext  = path.extname(filePath);
+        const mime = MIME[ext] || 'application/octet-stream';
+        res.writeHead(200, { ...CORS, 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+        res.end(data);
+      });
+      return;
+    }
+
     // Static files — serve PWA
     if (req.method === 'GET') { serveStatic(req, res); return; }
 
     res.writeHead(404, CORS); res.end(JSON.stringify({ error: 'not found' }));
   });
 
-  _server.listen(port, '0.0.0.0', () => {
-    console.log(`[api] Nyxia API listening on 0.0.0.0:${port}`);
+  _server.listen(port, '127.0.0.1', () => {
+    logger.info('api', `Nyxia API listening on 127.0.0.1:${port}`);
   });
 
   _server.on('error', e => console.error('[api] server error:', e.message));

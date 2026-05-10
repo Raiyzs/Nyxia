@@ -70,3 +70,26 @@ Set your keys inside the app under **Settings** (gear icon). No `.env` file need
 - Agent loop with tool use (search, shell, browser, filesystem)
 - Multi-provider support — Claude, Gemini, Groq, Mistral, Ollama
 - PWA companion interface for phone
+
+---
+
+## 3D Full Dive Space (`src/space.html`)
+
+An experimental Three.js environment where Nyxia inhabits a holographic 3D space. Panels float around her avatar, can be grabbed/thrown/inspected with haptic-style mouse input, and the scene reacts to her mood.
+
+**Haptic spatial layer** — always on:
+
+- Grab, throw with momentum, long-press radial menu (inspect / pin / link / clone / delete)
+- Panel connection lines auto-drawn to central KRIX node
+- Spawn panels (`N`), reset (`R`), toggle terminal (`T`)
+
+**Build mode** (`B` key) — spatial authoring backed by a luminous string-grid shader:
+
+- String-grid floor weave with cursor proximity glow and pluck ripple (GLSL ShaderMaterial)
+- Snap-to-lattice placement at 0.5m intersections
+- Wall seats — vertical string sheets rise at active floor edges when placing walls
+- Tier 1 pieces: square floor, hex floor, lattice wall, pillar, light strip
+- InstancedMesh for all piece types — one draw call per type regardless of count
+- Karplus-Strong pluck synthesis (inline Web Audio, no CDN)
+- Undo stack (`Ctrl+Z`) for all placement operations
+- Visual contract: cyan `#00d4ff`, purple `#c084fc`, `AdditiveBlending`, no PBR, no rounded chrome

@@ -1,109 +1,84 @@
 #!/usr/bin/env python3
 """
-Nyxia Backend — Handles system awareness:
-  - Active window detection
-  - Clipboard monitoring  
-  - Time-based events
-  - Webcam (future)
-  - Screen capture (future)
+Nyxia Vitals Monitor — The Limbic System:
+  - Monitors system "breath" (CPU, RAM, Network)
+  - Feeds into Nyxia's interoception
+  - Lightweight, no UI, no X11/Wayland dependencies
 """
 
 import sys
 import json
 import time
 import threading
-import subprocess
 import os
+
+# Try to use psutil if available, otherwise fallback to basic /proc reading
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
 
 def send_event(event_type, data):
     """Send JSON event to Electron frontend via stdout."""
     msg = json.dumps({"type": event_type, "data": data})
     print(msg, flush=True)
 
-def get_active_window_linux():
-    """Get the name of the currently focused window on Linux."""
-    try:
-        # Try xdotool first
-        result = subprocess.run(
-            ['xdotool', 'getactivewindow', 'getwindowname'],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+def get_vitals():
+    """Gather system vitals."""
+    if HAS_PSUTIL:
+        cpu = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory().percent
+        # Simple net diff
+        net = psutil.net_io_counters()
+        return {
+            "cpu": cpu,
+            "ram": ram,
+            "net_total": net.bytes_sent + net.bytes_recv
+        }
+    else:
+        # Basic fallback for immutable systems without psutil
+        try:
+            with open('/proc/loadavg', 'r') as f:
+                load = float(f.read().split()[0])
+                cpu = min(100.0, (load / os.cpu_count()) * 100.0)
+            with open('/proc/meminfo', 'r') as f:
+                lines = f.readlines()
+                total = int(lines[0].split()[1])
+                free = int(lines[1].split()[1])
+                ram = ((total - free) / total) * 100.0
+            return {"cpu": round(cpu, 1), "ram": round(ram, 1), "net_total": 0}
+        except Exception:
+            return {"cpu": 0, "ram": 0, "net_total": 0}
 
-    try:
-        # Fallback: xprop
-        result = subprocess.run(
-            ['xprop', '-root', '_NET_ACTIVE_WINDOW'],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode == 0:
-            win_id = result.stdout.split()[-1]
-            name_result = subprocess.run(
-                ['xprop', '-id', win_id, 'WM_NAME'],
-                capture_output=True, text=True, timeout=2
-            )
-            if name_result.returncode == 0:
-                parts = name_result.stdout.split('"')
-                if len(parts) >= 2:
-                    return parts[1]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    return None
-
-def watch_active_window():
-    """Monitor active window and emit events on change."""
-    last_window = None
+def watch_vitals():
+    """Monitor vitals and emit events."""
+    last_net = 0
     while True:
         try:
-            window = get_active_window_linux()
-            if window and window != last_window:
-                last_window = window
-                send_event("active_window", window)
+            v = get_vitals()
+            # Calculate simple network "pulse"
+            net_delta = 0
+            if last_net > 0:
+                net_delta = v["net_total"] - last_net
+            last_net = v["net_total"]
+            
+            send_event("vitals", {
+                "cpu": v["cpu"],
+                "ram": v["ram"],
+                "net_kb_s": round(net_delta / 1024 / 2, 2) # 2s interval
+            })
         except Exception:
             pass
         time.sleep(2)
 
-def watch_time():
-    """Emit time-based events."""
-    last_hour = -1
-    while True:
-        try:
-            import datetime
-            now = datetime.datetime.now()
-            if now.hour != last_hour:
-                last_hour = now.hour
-                send_event("hour_change", {
-                    "hour": now.hour,
-                    "minute": now.minute,
-                    "period": "morning" if now.hour < 12 else "afternoon" if now.hour < 17 else "evening" if now.hour < 21 else "night"
-                })
-        except Exception:
-            pass
-        time.sleep(30)
-
-def heartbeat():
-    """Send periodic heartbeat so frontend knows backend is alive."""
-    while True:
-        send_event("heartbeat", {"ts": time.time()})
-        time.sleep(30)
-
 def main():
-    send_event("status", "Nyxia backend started ✦")
+    send_event("status", "Nyxia Limbic System active ✦")
 
-    threads = [
-        threading.Thread(target=watch_active_window, daemon=True),
-        threading.Thread(target=watch_time, daemon=True),
-        threading.Thread(target=heartbeat, daemon=True),
-    ]
+    vital_thread = threading.Thread(target=watch_vitals, daemon=True)
+    vital_thread.start()
 
-    for t in threads:
-        t.start()
-
-    # Keep alive - read commands from Electron if needed
+    # Keep alive - listen for commands from Electron
     try:
         for line in sys.stdin:
             line = line.strip()
@@ -111,17 +86,12 @@ def main():
                 continue
             try:
                 cmd = json.loads(line)
-                handle_command(cmd)
+                if cmd.get("type") == "ping":
+                    send_event("pong", {})
             except json.JSONDecodeError:
                 pass
     except (EOFError, KeyboardInterrupt):
         pass
-
-def handle_command(cmd):
-    """Handle commands from Electron."""
-    cmd_type = cmd.get("type")
-    if cmd_type == "ping":
-        send_event("pong", {})
 
 if __name__ == "__main__":
     main()

@@ -10,13 +10,29 @@
 //   getSelfBelief(topic)                 — integrated cortex query
 //   migrateFromSelfJson(selfData)        — JSON → Chroma migration
 
-const path = require('path');
-const fs   = require('fs');
-const http = require('http');
+const path       = require('path');
+const fs         = require('fs');
+const http       = require('http');
+const krixMemory = require('./krix-memory');
 // app is lazy-loaded inside functions to avoid interfering with Electron's module loader at require-time
 function getApp() { return require('electron').app; }
 
-const CHROMA_BASE  = 'http://127.0.0.1:8769/api/v2';
+const CHROMA_BASE   = 'http://127.0.0.1:8769/api/v2';
+const BRAIN_CORE    = 'http://127.0.0.1:7422';
+
+// sector key → biological region id in brain_core
+const SECTOR_TO_REGION = {
+  prefrontal:     'dlPFC_L',
+  cortex_left:    'brocas',
+  cortex_right:   'STG_R',
+  hippocampus:    'hippocampus_L',
+  limbic:         'acc_L',
+  amygdala_right: 'amygdala_R',
+  amygdala_left:  'amygdala_L',
+  cerebellum:     'cerebellum',
+  stem:           'thalamus',
+  mirror:         'vmPFC',
+};
 const CHROMA_TENANT = 'default_tenant';
 const CHROMA_DB     = 'default_database';
 const OLLAMA_HOST   = '127.0.0.1';
@@ -131,6 +147,20 @@ function fireSector(key, payload, intensity = 1.0) {
       const uuid   = await getSectorCollection(key);
       const text   = typeof payload === 'string' ? payload
                    : (payload.entry || payload.text || payload.summary || JSON.stringify(payload));
+
+      // Write-through to KRIX-BRAIN unified beliefs namespace
+      krixMemory.writeEntry('nyxia/beliefs', key, text).catch(() => {});
+
+      // Spike the corresponding neural region in brain-core (fire-and-forget)
+      const region = SECTOR_TO_REGION[key];
+      if (region) {
+        fetch(`${BRAIN_CORE}/spike`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ neuron: region, intensity, text, source: 'nyxia', route: false }),
+        }).catch(() => {});
+      }
+
       const vector = await embedText(text);
       const base   = `/tenants/${CHROMA_TENANT}/databases/${CHROMA_DB}/collections/${uuid}`;
 

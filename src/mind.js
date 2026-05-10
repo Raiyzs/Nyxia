@@ -327,6 +327,12 @@ Return ONLY a JSON array of 8 strings, no markdown:
   // INFO — rolling context buffer
   // ═══════════════════════════════════════════════════════════════════════
 
+  // Public API for external callers (e.g. main.js) to inject events.
+  // Prefer this over calling _push() directly.
+  injectEvent({ type, summary }) {
+    this._push({ type, summary });
+  }
+
   _push(event) {
     event.ts = Date.now();
     this._events.push(event);
@@ -526,17 +532,31 @@ Return ONLY the single thought, no quotes, no preamble.`;
   /** Get current clipboard text (last seen). */
   getClipboard() { return this._lastClip; }
 
-  /** Run a vision cycle — query Screenpipe OCR for recent screen text. Skips if busy or screen unchanged. */
+  /** Run a vision cycle — capture screen and describe via qwen2.5vl:7b. Skips if busy or screen unchanged. */
   async _updateVision() {
-    if (!this._getPrivacy().screenpipe) return;
+    if (!this._getPrivacy().vision) return; // 14.18 — was screenpipe (old Screenpipe integration key)
     if (this._visionBusy) return;
     this._visionBusy = true;
     try {
+      const tmpPath = '/tmp/nyxia_screen.png';
+
+      // Capture screenshot — use spectacle for KDE/Bazzite to avoid PipeWire portal pop-ups
       const isKDE = (process.env.XDG_CURRENT_DESKTOP || '').toLowerCase().includes('kde');
+      const N = 500;
+
+      const _deltaCheck = (buf) => {
+        const step = Math.max(1, Math.floor(buf.length / N));
+        const samples = Array.from({ length: N }, (_, i) => buf[Math.min(i * step, buf.length - 1)]);
+        let delta = 1.0;
+        if (this._lastScreenSamples?.length === N) {
+          delta = samples.reduce((sum, v, i) => sum + Math.abs(v - this._lastScreenSamples[i]), 0) / (N * 255);
+        }
+        this._lastScreenSamples = samples;
+        return delta;
+      };
 
       if (isKDE) {
-        // KDE: capture via spectacle, delta-check before running vision pipeline
-        const tmpPath = '/tmp/nyxia_screen.png';
+        // KDE: spectacle -b -n -o captures silently without portal prompts
         await new Promise((resolve, reject) => {
           require('child_process').execFile(
             'spectacle', ['-b', '-n', '-o', tmpPath],
@@ -544,34 +564,52 @@ Return ONLY the single thought, no quotes, no preamble.`;
             err => err ? reject(err) : resolve()
           );
         });
-
-        const buf = require('fs').readFileSync(tmpPath);
-        // Sample 500 evenly-spaced bytes — MAD/255 gives normalised delta
-        const N = 500;
-        const step = Math.max(1, Math.floor(buf.length / N));
-        const samples = Array.from({ length: N }, (_, i) => buf[Math.min(i * step, buf.length - 1)]);
-
-        let delta = 1.0; // no previous = always process
-        if (this._lastScreenSamples?.length === N) {
-          delta = samples.reduce((sum, v, i) => sum + Math.abs(v - this._lastScreenSamples[i]), 0) / (N * 255);
-        }
-        this._lastScreenSamples = samples;
-
-        if (delta < 0.05) {
-          console.log(`[vision] delta=${delta.toFixed(3)} — screen unchanged, skip`);
+        const delta = _deltaCheck(require('fs').readFileSync(tmpPath));
+        if (delta < 0.03) {
           this._visionBusy = false;
           return;
         }
-        console.log(`[vision] delta=${delta.toFixed(3)} — processing`);
-        this._appendAudit('screenpipe', 'screenshot');
+      } else {
+        // Fallback for non-KDE environments
+        const { desktopCapturer } = require('electron');
+        const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } });
+        if (!sources.length) { this._visionBusy = false; return; }
+        const png = sources[0].thumbnail.toPNG();
+        const delta = _deltaCheck(png);
+        if (delta < 0.03) {
+          this._visionBusy = false;
+          return;
+        }
+        require('fs').writeFileSync(tmpPath, png);
       }
 
-      // Screenpipe OCR — runs on non-KDE unconditionally, or on KDE after delta gate passes
-      const desc = await this.describeScreen();
+      // Phase 20.2 — Predictive Vision: form a hypothesis before calling VL
+      const _hypothesis = (() => {
+        const parts = [];
+        if (this._lastWindow) parts.push(this._lastWindow.toLowerCase());
+        if (this._contextStr) parts.push(this._contextStr.toLowerCase());
+        if (this._lastScreenDesc) parts.push(this._lastScreenDesc.toLowerCase());
+        return parts.join(' ');
+      })();
+
+      const desc = await this.describeScreen(tmpPath);
       if (desc && desc.length > 10) {
-        this._appendAudit('screenpipe', 'ocr_text');
+        this._appendAudit('vision', 'screenshot');
         this._lastScreenDesc = desc;
         this.emit('context-update', this.getContextString());
+
+        // Phase 20.2 — compare hypothesis vs actual; mismatch → curiosity gap
+        if (_hypothesis.length > 10 && this._addGap) {
+          const _words = s => new Set(s.toLowerCase().match(/\b\w{4,}\b/g) || []);
+          const hyp = _words(_hypothesis);
+          const act = _words(desc);
+          const overlap = [...act].filter(w => hyp.has(w)).length;
+          const overlap_r = act.size > 0 ? overlap / act.size : 1;
+          if (overlap_r < 0.25 && act.size > 3) {
+            // What VL sees is meaningfully different from what we expected
+            this._addGap(`You expected something different — the screen shows: "${desc.slice(0, 120)}". Why might this have changed?`, 'screen_surprise', 0.5);
+          }
+        }
       }
     } catch(e) {
       console.warn('[vision]', e.message);
@@ -580,36 +618,32 @@ Return ONLY the single thought, no quotes, no preamble.`;
   }
 
   /**
-   * Query Screenpipe for recent screen context (last 2 minutes of OCR text).
-   * Returns a condensed string of what's on screen, or null if Screenpipe is offline.
-   * Screenpipe runs as a separate process — no PipeWire dialog, no Electron permission needed.
+   * Describe screen content using qwen2.5vl:7b vision model.
+   * Reads screenshot from tmpPath and sends to Ollama — no external process needed.
    */
-  async describeScreen() {
+  async describeScreen(tmpPath = '/tmp/nyxia_screen.png') {
     try {
-      const http = require('http');
-      const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-      const url = `/search?content_type=ocr&limit=5&start_time=${encodeURIComponent(since)}`;
-      return new Promise(resolve => {
-        const req = http.get({ hostname: '127.0.0.1', port: 3030, path: url }, res => {
-          let data = '';
-          res.on('data', c => data += c);
-          res.on('end', () => {
-            try {
-              const parsed = JSON.parse(data);
-              const texts = (parsed.data || [])
-                .map(item => item.content?.text || '')
-                .filter(t => t.length > 5)
-                .join(' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 300);
-              resolve(texts.length > 10 ? texts : null);
-            } catch(e) { resolve(null); }
-          });
-        });
-        req.on('error', () => resolve(null));
-        req.setTimeout(3000, () => { req.destroy(); resolve(null); });
+      const fs = require('fs');
+      if (!fs.existsSync(tmpPath)) return null;
+      const b64 = fs.readFileSync(tmpPath).toString('base64');
+      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'qwen2.5vl:7b',
+          messages: [{
+            role: 'user',
+            content: 'Briefly describe what is on this screen in 1-2 sentences. Focus on the active application and what the user is doing.',
+            images: [b64]
+          }],
+          stream: false,
+          options: { temperature: 0, num_predict: 80 }
+        }),
+        signal: AbortSignal.timeout(20000)
       });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.message?.content?.trim() || null;
     } catch(e) { return null; }
   }
 

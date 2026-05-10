@@ -25,6 +25,11 @@
  *   concerned   — slight frown, forward lean, eyebrows together
  */
 
+const { queryOllama, parseJsonObject } = (typeof require !== 'undefined')
+  ? require('./utils/ollama-client')
+  : { queryOllama: null, parseJsonObject: null };
+const scheduler = (typeof require !== 'undefined') ? require('./utils/ollama-scheduler') : null;
+
 // ─────────────────────────────────────────────
 // EMOTION DETECTION
 // Reads Claude's response text and returns an
@@ -67,46 +72,77 @@ const EMOTION_PATTERNS = {
 };
 
 /**
- * Analyzes response text and returns dominant emotion + intensity.
- * @param {string} text - Claude's response
+ * Keyword-based fallback emotion detector.
+ * @param {string} text
  * @returns {{ emotion: string, intensity: number, isTechnical: boolean }}
  */
-function analyzeEmotion(text) {
+function _keywordEmotion(text) {
   const lower = text.toLowerCase();
   const scores = {};
 
   for (const [emotion, config] of Object.entries(EMOTION_PATTERNS)) {
     let score = 0;
     for (const keyword of config.keywords) {
-      if (lower.includes(keyword)) {
-        score += config.weight;
-      }
+      if (lower.includes(keyword)) score += config.weight;
     }
     scores[emotion] = score;
   }
 
-  // Detect if it's a technical/code response (longer, structured)
   const isTechnical = (
     text.includes('```') ||
-    text.includes('    ') ||      // code indentation
-    text.split('\n').length > 8 || // long structured response
+    text.includes('    ') ||
+    text.split('\n').length > 8 ||
     /\b(function|const|let|var|import|class|def|return)\b/.test(text)
   );
 
-  // Pick dominant emotion
   const dominant = Object.entries(scores).reduce(
     (best, [emotion, score]) => score > best.score ? { emotion, score } : best,
     { emotion: 'idle', score: 0 }
   );
 
-  // Normalize intensity 0–1
-  const intensity = Math.min(dominant.score / 3, 1);
-
   return {
     emotion: dominant.score > 0 ? dominant.emotion : (isTechnical ? 'focused' : 'idle'),
-    intensity,
-    isTechnical
+    intensity: Math.min(dominant.score / 3, 1),
+    isTechnical,
   };
+}
+
+/**
+ * LLM-based emotion detection via llama3.2:3b (2s timeout).
+ * Returns null on failure so caller can fall back to keyword matching.
+ */
+async function _llmEmotion(text) {
+  const sample = text.slice(0, 300);
+  const raw = await scheduler.enqueue(
+    2,
+    () => queryOllama(
+      'Detect the emotional tone of the AI response. Return ONLY valid JSON, no extra text.',
+      `Response: "${sample}"\n\nChoose one emotion from: happy, sad, curious, thinking, focused, playful, concerned, surprised, idle\nReturn: {"emotion":"...","intensity":0.5,"isTechnical":false}`,
+      { model: 'llama3.2:3b', maxTokens: 40, timeoutMs: 2000 }
+    ),
+    'avatar-emotion'
+  );
+  const parsed = parseJsonObject(raw);
+  if (!parsed) return null;
+  const validEmotions = ['happy','sad','curious','thinking','focused','playful','concerned','surprised','idle'];
+  if (!validEmotions.includes(parsed.emotion)) return null;
+  const isTechnical = (
+    text.includes('```') ||
+    text.split('\n').length > 8 ||
+    /\b(function|const|let|var|import|class|def|return)\b/.test(text)
+  );
+  return { emotion: parsed.emotion, intensity: Math.max(0, Math.min(1, parsed.intensity || 0.5)), isTechnical };
+}
+
+/**
+ * Analyzes response text and returns dominant emotion + intensity.
+ * Tries LLM first (2s timeout), falls back to keyword matching.
+ * @param {string} text - Claude's response
+ * @returns {Promise<{ emotion: string, intensity: number, isTechnical: boolean }>}
+ */
+async function analyzeEmotion(text) {
+  const llm = await _llmEmotion(text);
+  return llm || _keywordEmotion(text);
 }
 
 // ─────────────────────────────────────────────
@@ -158,10 +194,11 @@ class NyxiaAvatarController {
 
   /**
    * Play a named animation with a smooth crossfade.
-   * @param {string} emotion 
+   * @param {string} emotion
    * @param {number} fadeTime - crossfade duration in seconds
+   * @param {number} timeScale - playback speed (14.16: scaled by intensity)
    */
-  playAnimation(emotion, fadeTime = 0.4) {
+  playAnimation(emotion, fadeTime = 0.4, timeScale = 1) {
     const clipName = this.ANIM_MAP[emotion] || this.ANIM_MAP['idle'];
     const clip = this.clips[clipName];
 
@@ -177,7 +214,7 @@ class NyxiaAvatarController {
     if (this.currentAction === newAction) return;
 
     newAction.reset();
-    newAction.setEffectiveTimeScale(1);
+    newAction.setEffectiveTimeScale(timeScale);
     newAction.setEffectiveWeight(1);
 
     if (this.currentAction) {
@@ -202,11 +239,15 @@ class NyxiaAvatarController {
    * Avatar transitions to appropriate emotion, then talking.
    * @param {string} responseText - full response text
    */
-  onResponseReceived(responseText) {
-    const { emotion, intensity, isTechnical } = analyzeEmotion(responseText);
+  async onResponseReceived(responseText) {
+    const { emotion, intensity, isTechnical } = await analyzeEmotion(responseText);
+
+    // 14.16 — scale fadeTime and timeScale by intensity so strong emotions feel proportional
+    const fadeTime  = 0.2 + (1 - intensity) * 0.3;      // 0.2 at high intensity, 0.5 at low
+    const timeScale = 0.7 + intensity * 0.6;              // 0.7–1.3 based on intensity
 
     // Brief emotional flash before settling into talking
-    this.playAnimation(emotion, 0.2);
+    this.playAnimation(emotion, fadeTime, timeScale);
 
     setTimeout(() => {
       // Transition to talking state while reading the response

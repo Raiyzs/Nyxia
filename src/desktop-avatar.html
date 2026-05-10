@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nyxia Desktop</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../node_modules/three/build/three.module.js",
+    "three/addons/": "../node_modules/three/examples/jsm/"
+  }
+}
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: transparent !important;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    width: 100vw; height: 100vh;
+  }
+
+  #canvas-wrap {
+    position: absolute; inset: 0;
+    filter: drop-shadow(0 0 18px rgba(168,85,247,0.35));
+    pointer-events: none;
+  }
+  #three-canvas { display: block; }
+
+  #bubble {
+    position: fixed;
+    bottom: 92%;
+    left: 50%; transform: translateX(-50%);
+    background: rgba(10,4,20,0.93);
+    border: 1px solid rgba(168,85,247,0.5);
+    border-radius: 14px;
+    padding: 8px 14px;
+    font-size: 11.5px; line-height: 1.5; color: #e8d5ff;
+    max-width: 240px; text-align: center;
+    box-shadow: 0 0 20px rgba(168,85,247,0.2);
+    opacity: 0; transition: opacity 0.3s ease;
+    pointer-events: none;
+    backdrop-filter: blur(8px);
+    white-space: pre-wrap;
+    font-family: 'DM Sans', sans-serif; z-index: 100;
+  }
+  #bubble.show { opacity: 1; }
+
+  /* Preset dots — shown on hover */
+  #slide-dots {
+    position: fixed; bottom: 6px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center;
+    opacity: 0; transition: opacity 0.25s;
+    z-index: 200; pointer-events: all;
+  }
+  body:hover #slide-dots { opacity: 1; }
+  .sdot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: rgba(168,85,247,0.35); cursor: pointer;
+    transition: background 0.2s, transform 0.2s;
+    border: 1px solid rgba(168,85,247,0.4);
+  }
+  .sdot.active { background: #c084fc; transform: scale(1.35); border-color: #c084fc; }
+  .sdot:hover  { background: #a855f7; }
+</style>
+</head>
+<body>
+<div id="bubble"></div>
+<div id="canvas-wrap">
+  <canvas id="three-canvas"></canvas>
+</div>
+<div id="slide-dots"></div>
+
+<script>
+const { ipcRenderer } = require('electron');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const { NyxiaAvatarController } = require('./avatar-brain');
+const fs = require('fs');
+
+// ── Preset dots ────────────────────────────────────────────────────────────
+const NUM_PRESETS = 5;
+let currentPreset = 0;
+
+function buildDots() {
+  const el = document.getElementById('slide-dots');
+  el.innerHTML = '';
+  for (let i = 0; i < NUM_PRESETS; i++) {
+    const d = document.createElement('div');
+    d.className = 'sdot' + (i === currentPreset ? ' active' : '');
+    d.title = ['Right↘', 'Left↙', 'Right→', 'Left←', 'Center↓'][i] || i;
+    d.addEventListener('click', e => { e.stopPropagation(); goPreset(i); });
+    el.appendChild(d);
+  }
+}
+
+function goPreset(idx) {
+  currentPreset = idx % NUM_PRESETS;
+  ipcRenderer.send('set-desktop-preset', currentPreset);
+  buildDots();
+}
+
+buildDots();
+
+// Right-click → next preset
+document.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  goPreset(currentPreset + 1);
+});
+
+// ── Drag — move the window via IPC ────────────────────────────────────────
+let isDragging = false, dragMouseX = 0, dragMouseY = 0, dragWinX = 0, dragWinY = 0;
+
+document.addEventListener('mousedown', async e => {
+  if (e.button !== 0) return;
+  const bounds = await ipcRenderer.invoke('get-desktop-bounds');
+  if (!bounds) return;
+  isDragging = true;
+  dragMouseX = e.screenX; dragMouseY = e.screenY;
+  dragWinX = bounds.x;    dragWinY = bounds.y;
+  ipcRenderer.send('desktop-hit-test', true); // keep clickable during drag
+});
+
+document.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  const nx = dragWinX + (e.screenX - dragMouseX);
+  const ny = dragWinY + (e.screenY - dragMouseY);
+  ipcRenderer.send('set-desktop-position', nx, ny);
+});
+
+document.addEventListener('mouseup', e => {
+  if (!isDragging) return;
+  isDragging = false;
+  const nx = dragWinX + (e.screenX - dragMouseX);
+  const ny = dragWinY + (e.screenY - dragMouseY);
+  ipcRenderer.send('desktop-drag-end', nx, ny);
+});
+
+// ── Speech bubble ─────────────────────────────────────────────────────────
+let bubbleTimeout = null, _bubbleSentences = [], _bubbleTimer = null;
+
+function speak(text, duration = 4000) {
+  const b = document.getElementById('bubble');
+  clearTimeout(bubbleTimeout);
+  b.textContent = text;
+  b.classList.add('show');
+  if (duration > 0) bubbleTimeout = setTimeout(() => b.classList.remove('show'), duration);
+}
+
+ipcRenderer.on('speak-bubble', (_, text, idx) => {
+  _bubbleSentences[idx] = text;
+  if (idx === 0 || _bubbleTimer === null) _flushBubbleQueue(0);
+});
+function _flushBubbleQueue(idx) {
+  if (!_bubbleSentences[idx]) { _bubbleTimer = null; return; }
+  const text = _bubbleSentences[idx];
+  const duration = Math.max(3000, text.split(/\s+/).filter(Boolean).length * 300 + 3000);
+  speak(text, duration);
+  _bubbleTimer = setTimeout(() => _flushBubbleQueue(idx + 1), duration + 200);
+}
+
+// ── Avatar emotion relay ──────────────────────────────────────────────────
+ipcRenderer.on('avatar-react', (_, data) => {
+  if (window._avatarCtrl && data.emotion) window._avatarCtrl.react(data.emotion, data.intensity || 0.8);
+});
+</script>
+
+<script>
+(async () => {
+  try {
+    const THREE           = await import('three');
+    const { GLTFLoader }  = await import('three/addons/loaders/GLTFLoader.js');
+    const { DRACOLoader } = await import('three/addons/loaders/DRACOLoader.js');
+
+    const canvas = document.getElementById('three-canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: false });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x000000, 0);
+
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.001, 1000);
+
+    function resize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 2.0));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.5);
+    keyLight.position.set(2, 4, 3); scene.add(keyLight);
+    const rimLight = new THREE.PointLight(0xa855f7, 4.0, 20);
+    rimLight.position.set(-2, 2, -1); scene.add(rimLight);
+    const fillLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    fillLight.position.set(-2, 1, 2); scene.add(fillLight);
+
+    let mixer = null, avatarCtrl = null;
+
+    function loadModel(buffer) {
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath(pathToFileURL(path.join(__dirname, '../node_modules/three/examples/jsm/libs/draco/')).href);
+      const loader = new GLTFLoader();
+      loader.setDRACOLoader(dracoLoader);
+      loader.parse(buffer, '', gltf => {
+        const model = gltf.scene;
+        model.traverse(child => {
+          if (child.isSkinnedMesh) {
+            try { child.pose(); } catch(_) {}
+            const skel = child.skeleton;
+            if (skel) { skel.calculateInverses(); child.bind(skel, child.matrixWorld); }
+          }
+        });
+        model.position.set(0, 0, 0);
+        model.rotation.set(0, 0, 0);
+        scene.add(model);
+        scene.updateMatrixWorld(true);
+
+        const geoBox = new THREE.Box3();
+        model.traverse(child => {
+          if ((child.isMesh || child.isSkinnedMesh) && child.geometry?.attributes.position) {
+            child.geometry.computeBoundingBox();
+            geoBox.union(child.geometry.boundingBox.clone().applyMatrix4(child.matrixWorld));
+          }
+        });
+        if (geoBox.isEmpty()) geoBox.set(new THREE.Vector3(-1,0,-1), new THREE.Vector3(1,2,1));
+
+        const h  = Math.max(0.5, geoBox.max.y - geoBox.min.y);
+        const cx = (geoBox.max.x + geoBox.min.x) / 2;
+        const cz = (geoBox.max.z + geoBox.min.z) / 2;
+        model.position.set(-cx, -geoBox.min.y, -cz);
+        model.rotation.y = window.modelRotOffset || 0;
+
+        const dist = h * 1.35, camY = h * 0.95, lookAtY = h * 0.58;
+        camera.position.set(0, camY, dist);
+        camera.lookAt(0, lookAtY, 0);
+        camera.far = dist * 6;
+        camera.updateProjectionMatrix();
+
+        mixer = new THREE.AnimationMixer(model);
+        avatarCtrl = new NyxiaAvatarController(model, mixer, gltf.animations);
+        window._avatarCtrl = avatarCtrl;
+        avatarCtrl.playAnimation('idle');
+      }, err => console.error('[desktop-avatar] parse error:', err));
+    }
+
+    const modelPath = path.join(__dirname, '../3d avatar/Nyxia3dV2.glb');
+    fs.readFile(modelPath, (err, nodeBuf) => {
+      if (err) return;
+      const buf = new ArrayBuffer(nodeBuf.byteLength);
+      new Uint8Array(buf).set(nodeBuf);
+      loadModel(buf);
+    });
+
+    // ── Hit-test (throttled 30fps) ────────────────────────────────────────
+    const gl = renderer.getContext();
+    const _px = new Uint8Array(4);
+    let _lastHit = 0;
+    document.addEventListener('mousemove', e => {
+      if (isDragging) return;
+      const now = Date.now();
+      if (now - _lastHit < 32) return;
+      _lastHit = now;
+      try {
+        gl.readPixels(
+          Math.round(e.clientX * window.devicePixelRatio),
+          Math.round((window.innerHeight - e.clientY) * window.devicePixelRatio),
+          1, 1, gl.RGBA, gl.UNSIGNED_BYTE, _px
+        );
+        ipcRenderer.send('desktop-hit-test', _px[3] > 10);
+      } catch(_) {}
+    });
+
+    // ── Render loop ───────────────────────────────────────────────────────
+    const clock = new THREE.Clock();
+    (function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      if (mixer) mixer.update(dt);
+      if (avatarCtrl) avatarCtrl.update(dt);
+      renderer.render(scene, camera);
+    })();
+
+  } catch(e) { console.error('[desktop-avatar] init error:', e); }
+})();
+</script>
+</body>
+</html>

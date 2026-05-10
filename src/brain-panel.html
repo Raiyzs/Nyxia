@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nyxia — Neural Activity</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; }
+
+  #overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+    display: flex; flex-direction: column;
+    justify-content: space-between;
+    padding: 18px 22px;
+    font-family: 'Courier New', monospace;
+    color: rgba(160, 100, 255, 0.75);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+
+  #title {
+    font-size: 13px;
+    font-weight: bold;
+    color: rgba(200, 140, 255, 0.9);
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+  }
+
+  #sector-legend {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 18px;
+  }
+  .sector-row {
+    display: flex; align-items: center; gap: 6px;
+    opacity: 0.5;
+    transition: opacity 0.3s;
+  }
+  .sector-row.active { opacity: 1.0; }
+  .sector-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 5px currentColor;
+  }
+
+  #activity-log {
+    height: 80px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 2px;
+  }
+  .log-entry {
+    opacity: 0.7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 0.7; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+  <div>
+    <div id="title">Nyxia — Neural Activity</div>
+  </div>
+  <div id="sector-legend"></div>
+  <div id="activity-log"></div>
+</div>
+
+<script>
+const { ipcRenderer } = require('electron');
+
+// ── Sector definitions ──────────────────────────────────────────────────────
+const SECTORS = {
+  prefrontal:    { label: 'Prefrontal',   color: [0.2,  0.5,  1.0],  desc: 'Reasoning / Planning' },
+  cortex_left:   { label: 'Cortex L',     color: [0.55, 0.15, 1.0],  desc: 'Language / Voice' },
+  cortex_right:  { label: 'Cortex R',     color: [0.35, 0.05, 0.85], desc: 'Creativity / Thought' },
+  limbic:        { label: 'Limbic',       color: [1.0,  0.25, 0.45], desc: 'Emotion / Attachment' },
+  amygdala_left: { label: 'Amygdala L',  color: [1.0,  0.05, 0.15], desc: 'Caution / Fear' },
+  amygdala_right:{ label: 'Amygdala R',  color: [1.0,  0.45, 0.0],  desc: 'Curiosity' },
+  hippocampus:   { label: 'Hippocampus', color: [0.0,  1.0,  0.65], desc: 'Memory Recall' },
+  cerebellum:    { label: 'Cerebellum',  color: [0.1,  0.85, 0.35], desc: 'Execution / Motor' },
+  stem:          { label: 'Stem',        color: [0.9,  0.9,  0.0],  desc: 'Heartbeat / System' },
+  mirror:        { label: 'Mirror',      color: [1.0,  0.8,  0.25], desc: 'Empathy / Delegation' },
+};
+
+// Build legend
+const legend = document.getElementById('sector-legend');
+for (const [key, s] of Object.entries(SECTORS)) {
+  const [r, g, b] = s.color;
+  const hex = `rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`;
+  const row = document.createElement('div');
+  row.className = 'sector-row';
+  row.id = `leg-${key}`;
+  row.innerHTML = `<div class="sector-dot" style="color:${hex};background:${hex}"></div><span>${s.label} — ${s.desc}</span>`;
+  legend.appendChild(row);
+}
+
+// ── Activity log ────────────────────────────────────────────────────────────
+const logEl = document.getElementById('activity-log');
+const MAX_LOG = 6;
+function logActivity(label, detail) {
+  const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  const el = document.createElement('div');
+  el.className = 'log-entry';
+  el.textContent = `${ts}  ${label}  ${detail || ''}`;
+  logEl.prepend(el);
+  while (logEl.children.length > MAX_LOG) logEl.removeChild(logEl.lastChild);
+}
+
+// ── Three.js sphere brain ───────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const W = window.innerWidth, H = window.innerHeight;
+canvas.width = W; canvas.height = H;
+
+// Minimal WebGL renderer without importing Three (faster load, smaller window)
+// We'll draw sectors as arcs on a sphere using WebGL directly via a simple canvas2D fallback.
+// For the full Three.js version, import it. Here we use canvas2D for speed.
+
+const ctx = canvas.getContext('2d');
+const CX = W / 2, CY = H / 2;
+const R_BASE = Math.min(W, H) * 0.30;
+const R_MAX  = Math.min(W, H) * 0.44;
+let R = R_BASE; // dynamic — grows with activity
+
+// Spike state
+const spikes = {};
+const decays = {};
+for (const k of Object.keys(SECTORS)) { spikes[k] = 0; decays[k] = 0.88; }
+decays['stem']   = 1.0;
+decays['limbic'] = 0.93;
+
+// Legend active state
+const legendActive = {};
+function setLegendActive(key, active) {
+  if (legendActive[key] === active) return;
+  legendActive[key] = active;
+  const el = document.getElementById(`leg-${key}`);
+  if (el) el.classList.toggle('active', active);
+}
+
+// ── Sector geometry — each sector is a wedge on the sphere projection ───────
+const SECTOR_KEYS = Object.keys(SECTORS);
+const N = SECTOR_KEYS.length;
+
+// Assign each sector a band on the sphere (latitude) + angular wedge
+const SECTOR_GEOM = {};
+SECTOR_KEYS.forEach((k, i) => {
+  const angle  = (i / N) * Math.PI * 2;
+  const span   = (Math.PI * 2) / N;
+  const depth  = 0.2 + (i % 3) * 0.25; // depth layer (0–0.7 of R)
+  SECTOR_GEOM[k] = { angle, span, depth };
+});
+
+// ── Draw frame ───────────────────────────────────────────────────────────────
+let t = 0;
+const heartbeatFreq = 1.1; // hz
+
+function rgb([r, g, b], alpha) {
+  return `rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${alpha})`;
+}
+
+function drawSphere() {
+  // Outer ring
+  ctx.beginPath();
+  ctx.arc(CX, CY, R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(120,60,200,0.15)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Inner rings
+  for (let ring = 1; ring <= 3; ring++) {
+    const rr = R * (ring / 4);
+    ctx.beginPath();
+    ctx.arc(CX, CY, rr, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(100,50,180,${0.06 * ring})`;
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+  }
+}
+
+function drawSectors(t) {
+  for (const [key, geom] of Object.entries(SECTOR_GEOM)) {
+    const s     = SECTORS[key];
+    const spike = spikes[key] || 0;
+    const resting = key === 'stem'
+      ? 0.3 + 0.3 * Math.sin(t * heartbeatFreq * Math.PI * 2)
+      : 0.15;
+    const intensity = Math.max(resting, spike);
+
+    if (intensity < 0.01) continue;
+
+    const [r, g, b] = s.color;
+    const innerR = R * (0.08 + geom.depth * 0.35);
+    const outerR = R * (0.22 + geom.depth * 0.55);
+
+    // Arc wedge
+    ctx.beginPath();
+    ctx.arc(CX, CY, outerR, geom.angle, geom.angle + geom.span * 0.85);
+    ctx.arc(CX, CY, innerR, geom.angle + geom.span * 0.85, geom.angle, true);
+    ctx.closePath();
+
+    const alpha = 0.08 + intensity * 0.5;
+    ctx.fillStyle = rgb([r, g, b], alpha);
+    ctx.fill();
+
+    // Glow edge
+    if (spike > 0.1) {
+      ctx.strokeStyle = rgb([r, g, b], spike * 0.9);
+      ctx.lineWidth = 1.5 + spike * 3;
+      ctx.stroke();
+
+      // Radial spike line
+      const midAngle = geom.angle + geom.span * 0.4;
+      const x1 = CX + Math.cos(midAngle) * innerR;
+      const y1 = CY + Math.sin(midAngle) * innerR;
+      const x2 = CX + Math.cos(midAngle) * (outerR + spike * 18);
+      const y2 = CY + Math.sin(midAngle) * (outerR + spike * 18);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.strokeStyle = rgb([r, g, b], spike * 0.6);
+      ctx.lineWidth = 1 + spike * 2;
+      ctx.stroke();
+    }
+
+    setLegendActive(key, spike > 0.3);
+  }
+
+  // Centre core — pulses with overall activity (totalActivity computed in frame loop)
+  const totalActivity = Object.values(spikes).reduce((a, b) => a + b, 0) / N;
+  const coreR = 8 + totalActivity * 22 + Math.sin(t * heartbeatFreq * Math.PI * 2) * 4;
+  const coreGrad = ctx.createRadialGradient(CX, CY, 0, CX, CY, coreR);
+  coreGrad.addColorStop(0, `rgba(200,140,255,${0.6 + totalActivity * 0.4})`);
+  coreGrad.addColorStop(1, 'rgba(200,140,255,0)');
+  ctx.beginPath();
+  ctx.arc(CX, CY, coreR, 0, Math.PI * 2);
+  ctx.fillStyle = coreGrad;
+  ctx.fill();
+}
+
+function drawConnections(t) {
+  // Draw arcs between active sectors
+  const active = SECTOR_KEYS.filter(k => spikes[k] > 0.2);
+  for (let i = 0; i < active.length - 1; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const ka = active[i], kb = active[j];
+      const ga = SECTOR_GEOM[ka], gb = SECTOR_GEOM[kb];
+      const sa = SECTORS[ka], sb = SECTORS[kb];
+
+      const midA = ga.angle + ga.span * 0.4;
+      const midB = gb.angle + gb.span * 0.4;
+      const rA   = R * (0.15 + ga.depth * 0.45);
+      const rB   = R * (0.15 + gb.depth * 0.45);
+
+      const x1 = CX + Math.cos(midA) * rA;
+      const y1 = CY + Math.sin(midA) * rA;
+      const x2 = CX + Math.cos(midB) * rB;
+      const y2 = CY + Math.sin(midB) * rB;
+
+      const strength = (spikes[ka] + spikes[kb]) * 0.5;
+      const [r1,g1,b1] = sa.color;
+      const [r2,g2,b2] = sb.color;
+
+      const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+      grad.addColorStop(0, rgb([r1,g1,b1], strength * 0.5));
+      grad.addColorStop(1, rgb([r2,g2,b2], strength * 0.5));
+
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      // Bezier through centre
+      ctx.quadraticCurveTo(CX, CY, x2, y2);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 0.8 + strength * 1.5;
+      ctx.stroke();
+    }
+  }
+}
+
+function frame(ts) {
+  t = ts / 1000;
+
+  // Scale brain radius with total activity — breathes larger when busy
+  const totalActivity = Object.values(spikes).reduce((a, b) => a + b, 0) / SECTOR_KEYS.length;
+  const targetR = R_BASE + (R_MAX - R_BASE) * Math.min(1, totalActivity * 1.8);
+  R += (targetR - R) * 0.04; // smooth lerp
+
+  ctx.clearRect(0, 0, W, H);
+
+  // Background glow
+  const bg = ctx.createRadialGradient(CX, CY, 0, CX, CY, R * 1.4);
+  bg.addColorStop(0, 'rgba(20,5,40,1)');
+  bg.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  drawSphere();
+  drawConnections(t);
+  drawSectors(t);
+
+  // Decay spikes
+  for (const k of SECTOR_KEYS) {
+    if (spikes[k] > 0.005) spikes[k] *= decays[k];
+    else spikes[k] = 0;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+
+// ── IPC: receive brain-fire events ──────────────────────────────────────────
+ipcRenderer.on('brain-fire', (_, { sector, intensity, decay, label }) => {
+  const key = sector?.toLowerCase().replace(' ', '_');
+  if (!(key in spikes)) return;
+  spikes[key] = Math.min(1.0, (spikes[key] || 0) + intensity);
+  if (decay !== undefined) decays[key] = decay;
+  if (label) logActivity(`[${SECTORS[key]?.label || key}]`, label);
+});
+
+// Stem heartbeat
+setInterval(() => {
+  spikes['stem'] = Math.max(spikes['stem'] || 0, 0.25);
+}, 900);
+
+window.addEventListener('resize', () => location.reload());
+</script>
+</body>
+</html>

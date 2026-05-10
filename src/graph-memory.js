@@ -46,6 +46,18 @@ async function _initSchema() {
   await _conn.query(
     'CREATE REL TABLE IF NOT EXISTS RELATES_TO(FROM Memory TO Memory, reason STRING)'
   );
+  await _conn.query(`
+    CREATE NODE TABLE IF NOT EXISTS Milestone(
+      id            STRING,
+      text          STRING,
+      milestoneType STRING,
+      date          STRING,
+      PRIMARY KEY(id)
+    )
+  `).catch(() => {}); // ignore if already exists
+  await _conn.query(
+    'CREATE REL TABLE IF NOT EXISTS CORRECTED(FROM Memory TO Memory, correction STRING)'
+  ).catch(() => {}); // ignore if already exists
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -204,4 +216,51 @@ async function nodeCount() {
   } catch { return 0; }
 }
 
-module.exports = { writeNode, writeEdge, queryConnected, queryMemoryGraph, migrateFromLance, inferEdges, nodeCount };
+/**
+ * Write a Milestone node — a significant relationship or project event.
+ * @param {string} text          — description of the milestone
+ * @param {string} milestoneType — e.g. 'first-win', 'first-session', 'shared-project', 'breakpoint'
+ * @param {string} [date]        — ISO date string, defaults to now
+ */
+async function writeMilestone(text, milestoneType = 'event', date = new Date().toISOString()) {
+  try {
+    const conn = await getConn();
+    const id   = textToId(text);
+    const safe = text.replace(/"/g, '\\"').slice(0, 500);
+    const safeT = milestoneType.replace(/"/g, '\\"').slice(0, 50);
+    await conn.query(
+      `MERGE (n:Milestone {id: "${id}"}) ` +
+      `ON CREATE SET n.text = "${safe}", n.milestoneType = "${safeT}", n.date = "${date}"`
+    );
+    console.log(`[graph-memory] milestone: [${milestoneType}] ${text.slice(0, 60)}`);
+    return id;
+  } catch (e) {
+    console.error('[graph-memory] writeMilestone error:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Write a CORRECTED edge — when Kristian corrects Nyxia.
+ * Creates both Memory nodes if they don't exist, then links them.
+ * @param {string} wrongText     — what Nyxia said that was wrong
+ * @param {string} correctionText — the correction
+ */
+async function writeCorrection(wrongText, correctionText) {
+  try {
+    const wrongId      = await writeNode(wrongText, 'claim', new Date().toISOString());
+    const correctionId = await writeNode(correctionText, 'correction', new Date().toISOString());
+    if (!wrongId || !correctionId) return;
+    const conn   = await getConn();
+    const safeC  = correctionText.replace(/"/g, '\\"').slice(0, 200);
+    await conn.query(
+      `MATCH (a:Memory {id: "${wrongId}"}), (b:Memory {id: "${correctionId}"}) ` +
+      `MERGE (a)-[:CORRECTED {correction: "${safeC}"}]->(b)`
+    );
+    console.log(`[graph-memory] correction recorded: "${wrongText.slice(0, 40)}" → corrected`);
+  } catch (e) {
+    console.error('[graph-memory] writeCorrection error:', e.message);
+  }
+}
+
+module.exports = { writeNode, writeEdge, queryConnected, queryMemoryGraph, migrateFromLance, inferEdges, nodeCount, writeMilestone, writeCorrection };

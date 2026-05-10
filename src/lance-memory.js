@@ -7,6 +7,7 @@ const path        = require('path');
 const os          = require('os');
 const fs          = require('fs');
 const graphMemory = require('./graph-memory');
+const krixMemory  = require('./krix-memory');
 
 const DB_PATH = path.join(os.homedir(), '.config', 'Nyxia', 'databases', 'memory');
 const TABLE   = 'reflections';
@@ -63,6 +64,8 @@ async function writeReflection(text, callOllama = null) {
       const db      = await lancedb.connect(DB_PATH);
       _table        = await db.createTable(TABLE, [row]);
     }
+    // Sync to KRIX-BRAIN unified memory (fire and forget)
+    krixMemory.writeEntry('nyxia/memories', 'reflection', text).catch(() => {});
     // Sync node to Kùzu graph (fire and forget)
     graphMemory.writeNode(text, 'reflection', date).then(async () => {
       if (callOllama) {
@@ -116,7 +119,7 @@ async function writeFeedback(query, response, correction) {
       const db      = await lancedb.connect(DB_PATH);
       _table        = await db.createTable(TABLE, [row]);
     }
-    // Sync correction node to Kùzu graph (fire and forget)
+    krixMemory.writeEntry('nyxia/memories', 'correction', text).catch(() => {});
     graphMemory.writeNode(text, 'correction', date).catch(() => {});
     console.log('[lance-memory] feedback saved:', text.slice(0, 80));
   } catch (e) {
@@ -124,4 +127,95 @@ async function writeFeedback(query, response, correction) {
   }
 }
 
-module.exports = { writeReflection, queryRelevant, writeFeedback };
+/**
+ * 14.12 — Purge refusal/error entries from LanceDB by text substring.
+ * LanceDB delete uses SQL-style filter. Wraps in try/catch — non-critical.
+ * @param {string[]} snippets — substrings that identify bad rows (partial match)
+ */
+async function purgeBySnippets(snippets) {
+  try {
+    const table = await getTable();
+    if (!table) return;
+    for (const snippet of snippets) {
+      const safe = snippet.replace(/'/g, "''"); // SQL escape
+      await table.delete(`text LIKE '%${safe}%'`).catch(() => {});
+    }
+    console.log(`[lance-memory] purged ${snippets.length} refusal pattern(s)`);
+  } catch(e) {
+    console.error('[lance-memory] purgeBySnippets error:', e.message);
+  }
+}
+
+/**
+ * Write a conversation anchor — a significant exchange sentence stored for re-engagement.
+ * @param {string} text — the anchor sentence to store
+ */
+async function writeAnchor(text) {
+  try {
+    const vector = await embed(text);
+    const date   = new Date().toISOString();
+    const row    = { vector, text, type: 'anchor', date };
+    let table    = await getTable();
+    if (table) {
+      await table.add([row]);
+    } else {
+      fs.mkdirSync(DB_PATH, { recursive: true });
+      const lancedb = require('vectordb');
+      const db      = await lancedb.connect(DB_PATH);
+      _table        = await db.createTable(TABLE, [row]);
+    }
+    krixMemory.writeEntry('nyxia/memories', 'anchor', text).catch(() => {});
+    console.log('[lance-memory] anchor saved:', text.slice(0, 60));
+  } catch (e) {
+    console.error('[lance-memory] writeAnchor error:', e.message);
+  }
+}
+
+/**
+ * Return the most recent anchor entries (type='anchor'), newest first.
+ * @param {number} limit — max results (default 3)
+ * @returns {Promise<string[]>} — array of anchor text strings
+ */
+async function queryAnchors(limit = 3) {
+  try {
+    const table = await getTable();
+    if (!table) return [];
+    // Use a vector query with a neutral embedding, then filter by type
+    const vector  = await embed('significant moment conversation anchor');
+    const results = await table.search(vector).limit(limit * 4).execute();
+    return results
+      .filter(r => r.type === 'anchor')
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, limit)
+      .map(r => r.text);
+  } catch (e) {
+    console.error('[lance-memory] queryAnchors error:', e.message);
+    return [];
+  }
+}
+
+/**
+ * Store an opinion Nyxia expressed — enables diffable opinion evolution over time.
+ * @param {string} text — the opinion sentence (already extracted, ~1-2 sentences)
+ */
+async function writeOpinion(text) {
+  krixMemory.writeEntry('nyxia/memories', 'opinion', text).catch(() => {});
+  try {
+    const vector = await embed(text);
+    const date   = new Date().toISOString();
+    const row    = { vector, text, type: 'opinion', date };
+    let table    = await getTable();
+    if (table) {
+      await table.add([row]);
+    } else {
+      fs.mkdirSync(DB_PATH, { recursive: true });
+      const lancedb = require('vectordb');
+      const db      = await lancedb.connect(DB_PATH);
+      _table        = await db.createTable(TABLE, [row]);
+    }
+  } catch (e) {
+    console.error('[lance-memory] writeOpinion error:', e.message);
+  }
+}
+
+module.exports = { writeReflection, queryRelevant, writeFeedback, purgeBySnippets, writeAnchor, queryAnchors, writeOpinion };

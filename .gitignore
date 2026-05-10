@@ -33,6 +33,17 @@ brain 3d/
 
 # Personlighet/modell-definisjon (del ikke offentlig)
 Nyxia.modelfile
+nyxia-*.Modelfile
+
+# Treningsdata og modellvekter
+training_data/
+
+# Graphify output (kan inneholde privat data)
+src/graphify-out/
+graphify-out/
+
+# OS-metadata
+.directory
 
 # Intern dokumentasjon
 commands.txt
@@ -49,3 +60,4 @@ docs/
 voicetrainer/xtts_ft/
 blender_scripts/
 voicetrainer/
+.oldmds/
