@@ -67,6 +67,10 @@ async function ensureOllama() {
       HOME:          process.env.HOME || '/var/home/kvoldnes',
       OLLAMA_HOST:   '127.0.0.1:11434',
       OLLAMA_MODELS: `${process.env.HOME || '/var/home/kvoldnes'}/.ollama/models`,
+      // RX 9070 XT: flash attention + q8 KV cache halve KV VRAM — keeps
+      // nyxia-ft (14B Q4_K_M @ 8k ctx) at 100% GPU with headroom for vision swaps
+      OLLAMA_FLASH_ATTENTION: '1',
+      OLLAMA_KV_CACHE_TYPE:   'q8_0',
     },
   });
   ollamaProc.stdout.on('data', d => logger.info('ollama', d.toString().trim()));
@@ -108,9 +112,39 @@ async function waitForVram(minMb = 5500, timeoutMs = 30000) {
   return false;
 }
 
+// ── Reflex layer (Nengo SNN soul state server) ────────────────────────────────
+const REFLEX_PORT = 8788;
+const REFLEX_BIN  = '/var/home/kvoldnes/nyxia/backend/reflex_server.py';
+let reflexProc = null;
+
+async function ensureReflex() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${REFLEX_PORT}/health`);
+    if (res.ok) { logger.info('reflex', 'already running'); return; }
+  } catch(_) {}
+
+  if (!fs.existsSync(REFLEX_BIN)) {
+    logger.warn('reflex', `not found: ${REFLEX_BIN}`);
+    return;
+  }
+
+  logger.info('reflex', 'starting...');
+  reflexProc = spawn('/usr/bin/python3', [REFLEX_BIN], {
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PYTHONUNBUFFERED: '1' },
+  });
+  reflexProc.stdout.on('data', d => logger.info('reflex', d.toString().trim()));
+  reflexProc.stderr.on('data', d => logger.info('reflex', d.toString().trim()));
+  reflexProc.on('error', e => logger.error('reflex', `spawn error: ${e.message}`));
+  reflexProc.on('exit',  c => { logger.info('reflex', `exited: ${c}`); reflexProc = null; });
+  // Non-blocking — reflex layer is optional, Nyxia works without it
+}
+
 // ── Cleanup helpers ───────────────────────────────────────────────────────────
-function killChroma()      { if (chromaProc) { chromaProc.kill(); chromaProc = null; } }
-function killOllama()      { if (ollamaProc) { ollamaProc.kill(); ollamaProc = null; } }
+function killChroma()      { if (chromaProc)  { chromaProc.kill();  chromaProc  = null; } }
+function killOllama()      { if (ollamaProc)  { ollamaProc.kill();  ollamaProc  = null; } }
+function killReflex()      { if (reflexProc)  { reflexProc.kill();  reflexProc  = null; } }
 function isOllamaSpawned() { return !!ollamaProc; }
 
-module.exports = { ensureChroma, ensureOllama, waitForVram, killChroma, killOllama, isOllamaSpawned };
+module.exports = { ensureChroma, ensureOllama, ensureReflex, waitForVram, killChroma, killOllama, killReflex, isOllamaSpawned };

@@ -79,4 +79,65 @@ function getContextAge(slot) {
   return _timestamps[slot] ? Date.now() - _timestamps[slot] : Infinity;
 }
 
-module.exports = { setContext, getSlot, getContext, getContextAge, PRIORITY };
+// Soft char budget per slot when using getBudgetedContext()
+const SLOT_BUDGETS = {
+  self:   500,
+  mood:   200,
+  other:  300,
+  memory: 900,
+  body:   180,
+  gaps:   250,
+  graph:  600,
+  scene:  400,
+};
+
+function _truncate(text, maxChars) {
+  if (!text || text.length <= maxChars) return text;
+  const s    = String(text).slice(0, maxChars);
+  const last = Math.max(s.lastIndexOf('. '), s.lastIndexOf('\n'));
+  return (last > maxChars * 0.5 ? s.slice(0, last + 1) : s).trimEnd();
+}
+
+/**
+ * getBudgetedContext(totalBudget, moodState?) — returns all non-stale slots,
+ * each capped to its slot budget, total capped at totalBudget chars.
+ * Slots are included in priority order (high first).
+ * moodState applies somatic budgetMod — tired/overloaded reduces total budget.
+ *
+ * @param {number} totalBudget — max total chars (default 3000)
+ * @param {object} [moodState] — optional mood state for somatic budget scaling
+ * @returns {{ slots: object, totalChars: number, truncated: boolean }}
+ */
+function getBudgetedContext(totalBudget = 3000, moodState = null) {
+  if (moodState) {
+    try {
+      const { getSomaticBias } = require('./somatic');
+      const { budgetMod } = getSomaticBias(moodState);
+      totalBudget = Math.floor(totalBudget * budgetMod);
+    } catch(_) {}
+  }
+  const priorityOrder = Object.keys(PRIORITY).sort((a, b) => PRIORITY[b] - PRIORITY[a]);
+  const slots  = {};
+  let   used   = 0;
+  let   truncated = false;
+
+  for (const slot of priorityOrder) {
+    const val = getSlot(slot);
+    if (val === null) continue;
+
+    const text    = typeof val === 'string' ? val : JSON.stringify(val);
+    const cap     = Math.min(SLOT_BUDGETS[slot] ?? 300, totalBudget - used);
+    if (cap <= 0) { truncated = true; break; }
+
+    const chunk = _truncate(text, cap);
+    if (chunk) {
+      slots[slot] = chunk;
+      used += chunk.length;
+      if (chunk.length < text.length) truncated = true;
+    }
+  }
+
+  return { slots, totalChars: used, truncated };
+}
+
+module.exports = { setContext, getSlot, getContext, getContextAge, getBudgetedContext, PRIORITY, SLOT_BUDGETS };

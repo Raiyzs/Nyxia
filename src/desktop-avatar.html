@@ -7,7 +7,8 @@
 {
   "imports": {
     "three": "../node_modules/three/build/three.module.js",
-    "three/addons/": "../node_modules/three/examples/jsm/"
+    "three/addons/": "../node_modules/three/examples/jsm/",
+    "@pixiv/three-vrm": "../node_modules/@pixiv/three-vrm/lib/three-vrm.module.js"
   }
 }
 </script>
@@ -164,6 +165,34 @@ function _flushBubbleQueue(idx) {
 ipcRenderer.on('avatar-react', (_, data) => {
   if (window._avatarCtrl && data.emotion) window._avatarCtrl.react(data.emotion, data.intensity || 0.8);
 });
+
+// ── Awareness → avatar (vessel layer) ────────────────────────────────────
+// Mind events from main.js drive her body without any LLM round-trip.
+let _awarenessTimer = null;
+function _awarenessReact(emotion, holdMs = 5000) {
+  if (!window._avatarCtrl) return;
+  clearTimeout(_awarenessTimer);
+  window._avatarCtrl.react(emotion);
+  _awarenessTimer = setTimeout(() => {
+    if (window._avatarCtrl) window._avatarCtrl.react('idle');
+  }, holdMs);
+}
+
+ipcRenderer.on('mind-window-change', (_, { title, category }) => {
+  const lower = (title || '').toLowerCase();
+  if      (lower.includes('elden') || lower.includes('game') || category === 'game') _awarenessReact('playful', 8000);
+  else if (lower.includes('code') || lower.includes('terminal') || lower.includes('nvim') || category === 'code') _awarenessReact('focused', 6000);
+  else if (lower.includes('youtube') || lower.includes('spotify') || lower.includes('music')) _awarenessReact('happy', 6000);
+  else if (lower.includes('blender') || lower.includes('godot')) _awarenessReact('curious', 5000);
+});
+
+ipcRenderer.on('mind-clipboard-change', () => _awarenessReact('curious', 3500));
+
+ipcRenderer.on('mind-thought', () => _awarenessReact('thinking', 4000));
+
+ipcRenderer.on('mind-high-load', (_, { loadPct }) => {
+  if (loadPct > 60) _awarenessReact('concerned', 5000);
+});
 </script>
 
 <script>
@@ -172,6 +201,9 @@ ipcRenderer.on('avatar-react', (_, data) => {
     const THREE           = await import('three');
     const { GLTFLoader }  = await import('three/addons/loaders/GLTFLoader.js');
     const { DRACOLoader } = await import('three/addons/loaders/DRACOLoader.js');
+    const { VRMLoaderPlugin, VRMUtils } = await import('@pixiv/three-vrm');
+    const { buildRetargeter, buildRestIdleClip } = require('./mixamo-vrm-retarget');
+    const retargetMixamoToVRM = buildRetargeter(THREE);
 
     const canvas = document.getElementById('three-canvas');
     const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: false });
@@ -199,14 +231,30 @@ ipcRenderer.on('avatar-react', (_, data) => {
     fillLight.position.set(-2, 1, 2); scene.add(fillLight);
 
     let mixer = null, avatarCtrl = null;
+    let _vrmBones = null;
+    const _tmpQ = new THREE.Quaternion();
+    const _tmpE = new THREE.Euler();
 
     function loadModel(buffer) {
       const dracoLoader = new DRACOLoader();
       dracoLoader.setDecoderPath(pathToFileURL(path.join(__dirname, '../node_modules/three/examples/jsm/libs/draco/')).href);
       const loader = new GLTFLoader();
       loader.setDRACOLoader(dracoLoader);
+      loader.register((parser) => new VRMLoaderPlugin(parser));
       loader.parse(buffer, '', gltf => {
-        const model = gltf.scene;
+        const vrm = gltf.userData.vrm;
+        if (vrm) {
+          VRMUtils.removeUnnecessaryVertices(gltf.scene);
+          VRMUtils.combineSkeletons(gltf.scene);
+          window.nyxiaVRM = vrm;
+          // Normalized bones, not raw — see note in retargetMixamoToVRM.
+          _vrmBones = {
+            head:  vrm.humanoid.getNormalizedBoneNode?.('head'),
+            chest: vrm.humanoid.getNormalizedBoneNode?.('chest'),
+            spine: vrm.humanoid.getNormalizedBoneNode?.('spine'),
+          };
+        }
+        const model = vrm ? vrm.scene : gltf.scene;
         model.traverse(child => {
           if (child.isSkinnedMesh) {
             try { child.pose(); } catch(_) {}
@@ -233,6 +281,8 @@ ipcRenderer.on('avatar-react', (_, data) => {
         const cz = (geoBox.max.z + geoBox.min.z) / 2;
         model.position.set(-cx, -geoBox.min.y, -cz);
         model.rotation.y = window.modelRotOffset || 0;
+        window._model = model;
+        window._modelBaseY = -geoBox.min.y;
 
         const dist = h * 1.35, camY = h * 0.95, lookAtY = h * 0.58;
         camera.position.set(0, camY, dist);
@@ -241,13 +291,36 @@ ipcRenderer.on('avatar-react', (_, data) => {
         camera.updateProjectionMatrix();
 
         mixer = new THREE.AnimationMixer(model);
-        avatarCtrl = new NyxiaAvatarController(model, mixer, gltf.animations);
-        window._avatarCtrl = avatarCtrl;
-        avatarCtrl.playAnimation('idle');
+
+        const initCtrl = (clips) => {
+          avatarCtrl = new NyxiaAvatarController(mixer, clips);
+          window._avatarCtrl = avatarCtrl;
+          avatarCtrl.playAnimation('idle');
+        };
+
+        if (vrm) {
+          const mixamoPath = path.join(__dirname, '../3d avatar/nyxia-anims.glb');
+          fs.readFile(mixamoPath, (err2, nodeBuf2) => {
+            if (err2) { console.error('[desktop-avatar] anims glb missing:', err2.message); initCtrl([]); return; }
+            const ab = nodeBuf2.buffer.slice(nodeBuf2.byteOffset, nodeBuf2.byteOffset + nodeBuf2.byteLength);
+            const dl2 = new DRACOLoader();
+            dl2.setDecoderPath(pathToFileURL(path.join(__dirname, '../node_modules/three/examples/jsm/libs/draco/')).href);
+            const ld2 = new GLTFLoader();
+            ld2.setDRACOLoader(dl2);
+            ld2.parse(ab, '', g2 => {
+              const retargeted = retargetMixamoToVRM(g2.animations, vrm);
+              retargeted.push(buildRestIdleClip(THREE, vrm));
+              ipcRenderer.send('log', `[desktop-avatar] ${retargeted.length} clips live`);
+              initCtrl(retargeted);
+            }, e => { console.error('[desktop-avatar] parse err:', e); initCtrl([]); });
+          });
+        } else {
+          initCtrl(gltf.animations);
+        }
       }, err => console.error('[desktop-avatar] parse error:', err));
     }
 
-    const modelPath = path.join(__dirname, '../3d avatar/Nyxia3dV2.glb');
+    const modelPath = path.join(__dirname, '../3d avatar/girl_character2_test.vrm');
     fs.readFile(modelPath, (err, nodeBuf) => {
       if (err) return;
       const buf = new ArrayBuffer(nodeBuf.byteLength);
@@ -255,11 +328,14 @@ ipcRenderer.on('avatar-react', (_, data) => {
       loadModel(buf);
     });
 
-    // ── Hit-test (throttled 30fps) ────────────────────────────────────────
+    // ── Hit-test + mouse tracking (throttled 30fps) ──────────────────────
     const gl = renderer.getContext();
     const _px = new Uint8Array(4);
     let _lastHit = 0;
+    let _mouse = { x: 0, y: 0 };
     document.addEventListener('mousemove', e => {
+      _mouse.x = (e.clientX / window.innerWidth)  * 2 - 1;
+      _mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
       if (isDragging) return;
       const now = Date.now();
       if (now - _lastHit < 32) return;
@@ -275,12 +351,76 @@ ipcRenderer.on('avatar-react', (_, data) => {
     });
 
     // ── Render loop ───────────────────────────────────────────────────────
+    let _blinkTimer = 0, _blinkNext = 2 + Math.random() * 3, _blinkAnim = 0;
     const clock = new THREE.Clock();
     (function animate() {
       requestAnimationFrame(animate);
       const dt = clock.getDelta();
+      const t  = clock.elapsedTime;
+
       if (mixer) mixer.update(dt);
-      if (avatarCtrl) avatarCtrl.update(dt);
+
+      if (window.nyxiaVRM) {
+        const vrm = window.nyxiaVRM;
+
+        // Mouse look-at
+        if (vrm.lookAt) {
+          vrm.lookAt.yaw   = -_mouse.x * 20;
+          vrm.lookAt.pitch =  _mouse.y * 10;
+        }
+
+        // Auto-blink
+        _blinkTimer += dt;
+        if (_blinkTimer >= _blinkNext && _blinkAnim <= 0) {
+          _blinkTimer = 0;
+          _blinkNext  = 2.5 + Math.random() * 4;
+          _blinkAnim  = 0.22;
+        }
+        if (_blinkAnim > 0) {
+          _blinkAnim = Math.max(0, _blinkAnim - dt);
+          const n = _blinkAnim / 0.22; // 1→0
+          vrm.expressionManager.setValue('blink', 1 - Math.abs(n - 0.5) * 2);
+        } else {
+          vrm.expressionManager.setValue('blink', 0);
+        }
+
+        // Idle breathing sway (model-level float)
+        if (window._model) {
+          window._model.position.y = (window._modelBaseY || 0) + Math.sin(t * 0.75) * 0.012;
+          window._model.rotation.z = Math.sin(t * 0.38) * 0.009;
+        }
+
+        // Procedural bone micro-movement — multiplied on top of clip rotations.
+        // Amplitude scales with emotion so curious/playful states feel more alive.
+        if (_vrmBones) {
+          const emo = avatarCtrl?.currentEmotion || 'idle';
+          const amp = emo === 'thinking' ? 1.6 : emo === 'curious'  ? 1.4 :
+                      emo === 'playful'  ? 2.0 : emo === 'happy'    ? 1.5 : 1.0;
+          if (_vrmBones.head) {
+            _tmpQ.setFromEuler(_tmpE.set(
+              Math.sin(t * 0.37) * 0.020 * amp,
+              Math.sin(t * 0.19) * 0.015 * amp,
+              Math.sin(t * 0.27) * 0.012 * amp
+            ));
+            _vrmBones.head.quaternion.multiply(_tmpQ);
+          }
+          if (_vrmBones.chest) {
+            _tmpQ.setFromEuler(_tmpE.set(
+              Math.sin(t * 0.90) * 0.009,
+              0,
+              Math.sin(t * 0.41 + 0.7) * 0.006
+            ));
+            _vrmBones.chest.quaternion.multiply(_tmpQ);
+          }
+          if (_vrmBones.spine) {
+            _tmpQ.setFromEuler(_tmpE.set(0, 0, Math.sin(t * 0.31 + 0.5) * 0.005));
+            _vrmBones.spine.quaternion.multiply(_tmpQ);
+          }
+        }
+
+        vrm.update(dt);
+      }
+
       renderer.render(scene, camera);
     })();
 

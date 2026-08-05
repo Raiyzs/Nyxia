@@ -2,6 +2,14 @@
 
 const DESKTOP_TILE_W = 340;
 
+function clampToDisplay(x, y, display) {
+  const { x: dx, y: dy, width: dw, height: dh } = display.bounds;
+  return {
+    x: Math.max(dx, Math.min(x, dx + dw - 1)),
+    y: Math.max(dy, Math.min(y, dy + dh - 1))
+  };
+}
+
 function getDesktopPresets() {
   const { screen } = require('electron');
   const { width: sw, height: sh } = screen.getPrimaryDisplay().bounds;
@@ -28,16 +36,18 @@ module.exports = function createWindowManager(deps) {
   const dir = deps.__dirname;
 
   function createCompanionWindow() {
-    const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+    const primary = screen.getPrimaryDisplay();
+    const { width, height } = primary.workAreaSize;
     const saved = loadConfig();
     const cW = saved?.companion?.width || 380;
     const cH = saved?.companion?.height || 380;
-    const cX = saved?.companion?.x ?? (width - cW - 20);
-    const cY = saved?.companion?.y ?? (height - cH - 20);
+    const rawX = saved?.companion?.x ?? (width - cW - 20);
+    const rawY = saved?.companion?.y ?? (height - cH - 20);
+    const { x: cX, y: cY } = clampToDisplay(rawX, rawY, primary);
 
     const win = new BrowserWindow({
       width: cW, height: cH, x: cX, y: cY,
-      transparent: true, frame: false, alwaysOnTop: true,
+      transparent: true, frame: false,
       skipTaskbar: true, resizable: true, hasShadow: false,
       backgroundColor: '#00000000',
       minWidth: 100, minHeight: 150, maxWidth: 500, maxHeight: 800,
@@ -46,7 +56,6 @@ module.exports = function createWindowManager(deps) {
     win.loadFile(path.join(dir, 'index.html'));
     setMain(win);
     setMainWindow(win);
-    win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     const persist = () => {
@@ -63,16 +72,18 @@ module.exports = function createWindowManager(deps) {
   }
 
   function createChatWindow() {
-    const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+    const primary = screen.getPrimaryDisplay();
+    const { width, height } = primary.workAreaSize;
     const saved = loadConfig();
     const pW = saved?.chat?.width || 960;
     const pH = saved?.chat?.height || 690;
-    const pX = saved?.chat?.x ?? (width - pW - 20);
-    const pY = saved?.chat?.y ?? (height - pH - 80);
+    const rawX = saved?.chat?.x ?? (width - pW - 20);
+    const rawY = saved?.chat?.y ?? (height - pH - 80);
+    const { x: pX, y: pY } = clampToDisplay(rawX, rawY, primary);
 
     const win = new BrowserWindow({
       width: pW, height: pH, x: pX, y: pY,
-      transparent: true, frame: false, alwaysOnTop: true,
+      transparent: true, frame: false,
       skipTaskbar: true, resizable: true, hasShadow: false,
       backgroundColor: '#00000000',
       minWidth: 320, minHeight: 400, maxWidth: 1400, maxHeight: 1100,
@@ -80,7 +91,6 @@ module.exports = function createWindowManager(deps) {
       webPreferences: { nodeIntegration: true, contextIsolation: false }
     });
     win.loadFile(path.join(dir, 'chat.html'));
-    win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     setChat(win);
 
@@ -99,16 +109,18 @@ module.exports = function createWindowManager(deps) {
   }
 
   function createCombinedWindow() {
-    const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+    const primary = screen.getPrimaryDisplay();
+    const { width, height } = primary.workAreaSize;
     const saved = loadConfig();
     const cW = saved?.combined?.width  || 1060;
     const cH = saved?.combined?.height || Math.min(height, 920);
-    const cX = saved?.combined?.x ?? Math.max(0, width - cW - 20);
-    const cY = saved?.combined?.y ?? Math.max(0, Math.round((height - cH) / 2));
+    const rawX = saved?.combined?.x ?? Math.max(0, width - cW - 20);
+    const rawY = saved?.combined?.y ?? Math.max(0, Math.round((height - cH) / 2));
+    const { x: cX, y: cY } = clampToDisplay(rawX, rawY, primary);
 
     const win = new BrowserWindow({
       width: cW, height: cH, x: cX, y: cY,
-      transparent: true, frame: false, alwaysOnTop: true,
+      transparent: true, frame: false,
       skipTaskbar: false, resizable: true, hasShadow: false,
       backgroundColor: '#00000000',
       icon: path.join(dir, '..', 'assets', 'logo.png'),
@@ -122,7 +134,6 @@ module.exports = function createWindowManager(deps) {
     win.loadFile(path.join(dir, 'space.html'));
     setMain(win);
     setMainWindow(win);
-    win.setAlwaysOnTop(true, 'screen-saver');
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
     const persist = () => {

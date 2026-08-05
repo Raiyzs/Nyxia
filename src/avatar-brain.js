@@ -171,9 +171,9 @@ class NyxiaAvatarController {
 
     // Map emotion states to animation clip names in the GLB
     this.ANIM_MAP = {
-      idle:      'idle',
-      thinking:  'fold_arms',
-      talking:   'complain_01',
+      idle:      'rest_idle',
+      thinking:  'rest_idle',
+      talking:   'complain_02',
       happy:     'cheer',
       sad:       'cry',
       curious:   'play_video_game',
@@ -182,6 +182,23 @@ class NyxiaAvatarController {
       surprised: 'frightened',
       concerned: 'frustrated_01',
     };
+
+    // Map emotion states to VRM expression presets (facial blendshapes).
+    // Works independently of body clips — covers VRM avatars with no
+    // baked Mixamo animations yet (see ANIM_MAP above).
+    this.EXPR_MAP = {
+      idle:      'neutral',
+      thinking:  'neutral',
+      talking:   'neutral',
+      happy:     'happy',
+      sad:       'sad',
+      curious:   'relaxed',
+      focused:   'neutral',
+      playful:   'relaxed',
+      surprised: 'surprised',
+      concerned: 'sad',
+    };
+    this.currentExpression = null;
 
     // Index all clips by name for fast lookup
     for (const clip of animations) {
@@ -193,12 +210,29 @@ class NyxiaAvatarController {
   }
 
   /**
+   * Drive VRM facial blendshapes for the current emotion, if a VRM
+   * model (window.nyxiaVRM, set on load in index.html) is present.
+   */
+  _setExpression(emotion) {
+    const vrm = typeof window !== 'undefined' && window.nyxiaVRM;
+    if (!vrm || !vrm.expressionManager) return;
+    const name = this.EXPR_MAP[emotion] || 'neutral';
+    if (name === this.currentExpression) return;
+    if (this.currentExpression && this.currentExpression !== 'neutral') {
+      vrm.expressionManager.setValue(this.currentExpression, 0);
+    }
+    if (name !== 'neutral') vrm.expressionManager.setValue(name, 0.8);
+    this.currentExpression = name;
+  }
+
+  /**
    * Play a named animation with a smooth crossfade.
    * @param {string} emotion
    * @param {number} fadeTime - crossfade duration in seconds
    * @param {number} timeScale - playback speed (14.16: scaled by intensity)
    */
   playAnimation(emotion, fadeTime = 0.4, timeScale = 1) {
+    this._setExpression(emotion);
     const clipName = this.ANIM_MAP[emotion] || this.ANIM_MAP['idle'];
     const clip = this.clips[clipName];
 
@@ -281,6 +315,15 @@ class NyxiaAvatarController {
     if (duration) {
       setTimeout(() => this.playAnimation('idle', 0.8), duration);
     }
+  }
+
+  /**
+   * Ambient mood/state reaction (desktop overlay window) — same as
+   * setEmotion, named to match the 'avatar-react' IPC payload sent
+   * from main.js for non-chat emotion broadcasts.
+   */
+  react(emotion, intensity = 0.8) {
+    this.setEmotion(emotion);
   }
 
   /**

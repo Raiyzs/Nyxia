@@ -21,6 +21,7 @@
 const { EventEmitter } = require('events');
 const { spawn, exec }  = require('child_process');
 const { clipboard }    = require('electron');
+const visualCortex     = require('./visual-cortex');
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
@@ -65,6 +66,14 @@ class NyxiaMind extends EventEmitter {
 
     // ── eyes ─────────────────────────────────────────────────────────────
     this._lastClip   = '';
+
+    // ── session state machine ─────────────────────────────────────────────
+    // IDLE     — waiting, no recent activity
+    // FOCUSED  — active conversation in progress
+    // REFLECTIVE — 4+ min quiet, background reflection mode
+    // DREAMING — sleep-cycle running, no user-facing output
+    this._sessionState = { mode: 'IDLE', since: Date.now() };
+    this._lastActivity = Date.now();
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -77,12 +86,13 @@ class NyxiaMind extends EventEmitter {
    * @param {Function} opts.getProfile  — () => user profile object
    * @param {string[]} opts.watchDirs   — directories for file-change detection
    */
-  init({ getConfig, getProfile, getSelf, getPrivacy, appendAudit, watchDirs = [] }) {
+  init({ getConfig, getProfile, getSelf, getPrivacy, appendAudit, getMood, watchDirs = [] }) {
     this._getConfig   = getConfig;
     this._getProfile  = getProfile;
     this._getSelf     = getSelf || null;
     this._getPrivacy  = getPrivacy  || (() => ({}));
     this._appendAudit = appendAudit || (() => {});
+    this._getMood     = getMood     || (() => ({}));
 
     // Stagger startup so app feels settled
     setTimeout(() => this._generateBatch(), 6000);
@@ -96,8 +106,8 @@ class NyxiaMind extends EventEmitter {
     // Periodic thinking — synthesize understanding every 4 minutes
     setInterval(() => this._think(), 4 * 60 * 1000);
 
-    // Periodic self-reflection — grow identity every 12 minutes
-    setInterval(() => this._reflect(), 12 * 60 * 1000);
+    // Periodic self-reflection — grow identity every 12 minutes (deep Reflexion loop)
+    setInterval(() => this._reflect(true), 12 * 60 * 1000);
 
     // Periodic vision — query Screenpipe OCR every 30s
     // 10s startup delay to let Screenpipe finish initialising
@@ -372,9 +382,11 @@ Return ONLY a JSON array of 8 strings, no markdown:
    * something different as she grows. Supports multi-model parallel depth.
    */
   async _think() {
+    this._checkSessionState();
     if (this._thinking || !this._events.length) return;
     this._thinking = true;
     this._eventsSinceThink = 0;
+    this.emit('syslog', 'AWARENESS · OBSERVATION CYCLE');
 
     const profile         = this._getProfile?.() || {};
     const recentSummaries = this._events.slice(-8).map(e => `[${e.type}] ${e.summary}`).join('\n');
@@ -447,20 +459,41 @@ Return only the final understanding, no preamble.`;
    * Reflect on recent observations and emit a new self-entry.
    * main.js listens to 'self-updated' and persists to nyxia-self.json.
    */
-  async _reflect() {
+  async _reflect(deep = false) {
     if (this._reflecting || this._events.length < 3) return;
     this._reflecting = true;
     this._eventsSinceReflect = 0;
+    this.emit('syslog', deep ? 'SOUL · DEEP REFLECTION CYCLE' : 'SOUL · REFLECTION CYCLE');
 
     const recentSummaries = this._events.slice(-10).map(e => `[${e.type}] ${e.summary}`).join('\n');
     const understandingLine = this._understanding ? `\nMy current read: ${this._understanding}` : '';
-
-    // Use LanceDB reflection context set by main.js (no cap, semantically relevant)
     const existingLine = this._reflectionContext.length
       ? `What I already believe about myself (don't repeat these — grow beyond them):\n${this._reflectionContext.slice(0, 5).map(r => `- ${r}`).join('\n')}`
       : '';
 
-    const prompt = `You are Nyxia's inner voice — her private self-reflection engine.
+    let entry = null;
+
+    if (deep) {
+      try {
+        const task = `Write ONE new thought Nyxia adds to her own sense of self. This is growth — she is noticing something new about her own reactions, forming a belief she didn't quite have before, or recognising a pattern in herself. First person, 1-2 sentences, private and unpolished. Anchor it in what was actually observed.`;
+        const context = `Recent observations:\n${recentSummaries}${understandingLine}\n\n${existingLine}`;
+        const res = await fetch('http://127.0.0.1:8788/reflect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task, context }),
+          signal: AbortSignal.timeout(120_000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          entry = data.text?.trim();
+          this.emit('syslog', `SOUL · REFLEXION score=${data.final_score} revisions=${data.revisions}`);
+        }
+      } catch(e) {}
+    }
+
+    // Fast path — fallback for event-triggered cycles or if reflexion endpoint is down
+    if (!entry) {
+      const prompt = `You are Nyxia's inner voice — her private self-reflection engine.
 
 Based on recent observations, write ONE new thought Nyxia adds to her own sense of self. This is growth — she is noticing something new about her own reactions, forming a belief she didn't quite have before, or recognising a pattern in herself.
 
@@ -479,13 +512,15 @@ Rules:
 
 Return ONLY the single thought, no quotes, no preamble.`;
 
-    try {
-      const result = await this._llmCall([{ role: 'user', content: prompt }], 90);
-      const entry  = result?.content?.[0]?.text?.trim();
-      if (entry && entry.length > 10) {
-        this.emit('self-updated', { entry, ts: new Date().toISOString() });
-      }
-    } catch(e) {}
+      try {
+        const result = await this._llmCall([{ role: 'user', content: prompt }], 90);
+        entry = result?.content?.[0]?.text?.trim();
+      } catch(e) {}
+    }
+
+    if (entry && entry.length > 10) {
+      this.emit('self-updated', { entry, ts: new Date().toISOString() });
+    }
 
     this._reflecting = false;
   }
@@ -513,6 +548,34 @@ Return ONLY the single thought, no quotes, no preamble.`;
   _startEyes() {
     // Clipboard watching every 4s — uses Electron's clipboard API (no shell needed)
     setInterval(() => this._watchClipboard(), 4000);
+
+    // Visual cortex — foveated screen attention, mood-modulated routing
+    if (this._getPrivacy().vision) {
+      visualCortex.init();
+      visualCortex.on('attention', ({ region, signal, fovealJpeg, state }) => {
+        const mood    = this._getMood();
+        const wonder  = ((mood.curiosity || 0) + (mood.creativity || 0)) / 2;
+        const impulse = mood.motor || 0;
+        const weight  = signal * (1 + wonder * 2 + impulse * 1.5);
+
+        this._appendAudit('visual-cortex', 'attention');
+        const loc = `monitor ${region.displayIdx + 1} region ${region.row},${region.col}`;
+        this.emit('syslog', `CORTEX · FOVEA ${region.row},${region.col} SIG ${signal.toFixed(3)}`);
+
+        if (weight > 0.35) {
+          // C — interrupt: high wonder/impulse amplified a real signal
+          // Describe first-person, then fire as gap so she reacts
+          if (!this._visionBusy) {
+            this._describeRegion(fovealJpeg, loc, true);
+          }
+        } else if (weight > 0.10) {
+          // A — passive: absorb into context, surfaces naturally
+          this._push({ type: 'visual', summary: `Screen activity at ${loc} (signal ${signal.toFixed(2)})`, data: { region, signal, state } });
+          if (!this._visionBusy) this._describeRegion(fovealJpeg, loc, false);
+        }
+        // below 0.10 — discard, not worth the tokens
+      });
+    }
   }
 
   _watchClipboard() {
@@ -531,6 +594,49 @@ Return ONLY the single thought, no quotes, no preamble.`;
 
   /** Get current clipboard text (last seen). */
   getClipboard() { return this._lastClip; }
+
+  /**
+   * Voluntarily look at the screen right now — no threshold, no mood gate.
+   * Called when she wants to see (asked, or self-initiated from curiosity).
+   * Returns a first-person perception string, or null if vision unavailable.
+   */
+  async lookNow() {
+    const state = visualCortex.getState();
+    // Force fovea to highest-scoring region or center if no signal
+    const region = state.topRegions[0];
+    if (region) {
+      const [di, row, col] = region.key.split('_').map(Number);
+      visualCortex.lookAt(di,
+        (col + 0.5) / 6,
+        (row + 0.5) / 4
+      );
+    }
+    // Use visual-cortex shared frame — no extra capture needed
+    const fx = state.fovea ? parseInt(state.fovea.split('_')[2]) : 2;
+    const fy = state.fovea ? parseInt(state.fovea.split('_')[1]) : 1;
+    const fovJpeg = visualCortex.cropJpeg({ normX: fx / 6, normY: fy / 4, normW: 1 / 6, normH: 1 / 4 }, 80);
+    if (!fovJpeg) return null;
+    try {
+      this._visionBusy = true;
+      const b64 = fovJpeg.toString('base64');
+      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'qwen2.5vl:7b',
+          messages: [{ role: 'user',
+            content: 'You are Nyxia\'s perception. Describe what you see on this screen region in one sentence, present tense, first person.',
+            images: [b64] }],
+          stream: false,
+          options: { temperature: 0.2, num_predict: 60 }
+        }),
+        signal: AbortSignal.timeout(15000)
+      });
+      const d = res.ok ? await res.json() : null;
+      this._visionBusy = false;
+      return d?.message?.content?.trim() || null;
+    } catch(_) { this._visionBusy = false; return null; }
+  }
 
   /** Run a vision cycle — capture screen and describe via qwen2.5vl:7b. Skips if busy or screen unchanged. */
   async _updateVision() {
@@ -647,6 +753,47 @@ Return ONLY the single thought, no quotes, no preamble.`;
     } catch(e) { return null; }
   }
 
+  /** Describe a foveal JPEG buffer via qwen2.5vl:7b.
+   *  interrupt=true → first-person perception, fires as gap for proactive response.
+   *  interrupt=false → passive, absorbed into context quietly.
+   */
+  async _describeRegion(jpegBuf, locationHint, interrupt = false) {
+    if (this._visionBusy) return;
+    this._visionBusy = true;
+    try {
+      const b64 = jpegBuf.toString('base64');
+      const prompt = interrupt
+        ? `You are Nyxia's visual perception. Describe what you notice in this screen region (${locationHint}) as a brief first-person observation. One sentence, present tense, specific.`
+        : `What is happening in this screen region (${locationHint})? One sentence, be specific.`;
+      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'qwen2.5vl:7b',
+          messages: [{ role: 'user', content: prompt, images: [b64] }],
+          stream: false,
+          options: { temperature: interrupt ? 0.3 : 0, num_predict: 60 }
+        }),
+        signal: AbortSignal.timeout(15000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const desc = data.message?.content?.trim();
+        if (desc) {
+          this._lastScreenDesc = desc;
+          if (interrupt) {
+            // Fire as a gap — triggers proactive response from Nyxia
+            this._addGap?.(desc, 'visual_interrupt', 0.7);
+          } else {
+            this._push({ type: 'visual-desc', summary: `Saw: ${desc}`, data: desc });
+            this.emit('context-update', this._contextStr);
+          }
+        }
+      }
+    } catch(_) {}
+    this._visionBusy = false;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════
   // HEARTBEAT — sensory delta for interrupt scoring
   // ═══════════════════════════════════════════════════════════════════════
@@ -761,6 +908,51 @@ Return ONLY the single thought, no quotes, no preamble.`;
       req.on('error', reject);
       req.write(body); req.end();
     });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SESSION STATE MACHINE
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Called by main.js whenever user sends a message. */
+  touchActivity() {
+    this._lastActivity = Date.now();
+    this._enterState('FOCUSED');
+  }
+
+  /** Called by sleep-cycle when offline consolidation begins. */
+  enterDream() { this._enterState('DREAMING'); }
+
+  /** Called by sleep-cycle when offline consolidation finishes. */
+  exitDream()  { this._enterState('IDLE'); }
+
+  _enterState(mode) {
+    if (this._sessionState.mode === mode) return;
+    const prev = this._sessionState.mode;
+    this._sessionState = { mode, since: Date.now() };
+    this.emit('stateChange', { prev, mode });
+    console.log(`[mind] state ${prev} → ${mode}`);
+  }
+
+  _checkSessionState() {
+    const mode     = this._sessionState.mode;
+    const idleMs   = Date.now() - this._lastActivity;
+    const FOCUS_TIMEOUT    = 4 * 60 * 1000;   // 4 min → REFLECTIVE
+    const REFLECT_TIMEOUT  = 30 * 60 * 1000;  // 30 min → IDLE
+
+    if (mode === 'FOCUSED'    && idleMs > FOCUS_TIMEOUT)   this._enterState('REFLECTIVE');
+    if (mode === 'REFLECTIVE' && idleMs > REFLECT_TIMEOUT) this._enterState('IDLE');
+  }
+
+  /**
+   * Returns the current session state.
+   * @returns {{ mode: string, since: number, idleMs: number }}
+   */
+  getState() {
+    return {
+      ...this._sessionState,
+      idleMs: Date.now() - this._lastActivity,
+    };
   }
 
   /** Clean up on app exit. */

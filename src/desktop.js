@@ -110,9 +110,13 @@ async function desktopExecute(instruction) {
   // Close app
   const closeMatch = text.match(/\b(?:close|quit|kill)\s+([a-zA-Z][a-zA-Z0-9_\-\s]+)/i);
   if (closeMatch) {
-    const appName = closeMatch[1].trim();
+    // Sanitize: allow only alphanumeric, dash, underscore, and single space sequences
+    const appName = closeMatch[1].trim().replace(/[^a-zA-Z0-9_\- ]/g, '');
+    if (!appName) return 'Invalid app name.';
     try {
-      execSync(`pkill -f "${appName}" 2>/dev/null`, { timeout: 3000 });
+      // Use spawn instead of execSync with template string to avoid shell injection
+      const { spawnSync } = require('child_process');
+      spawnSync('pkill', ['-f', appName], { timeout: 3000 });
       return `Closed ${appName}.`;
     } catch {
       return `Could not close ${appName} — process not found.`;

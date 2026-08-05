@@ -12,11 +12,13 @@ module.exports = function createPromptBuilder(deps) {
     getStartupMemory, getSelfModel, getMoodState,
     getLanceReflections, getCortexBeliefs, getGraphContext,
     getScreenInterpretation, getLearnedFacts, getKrixBrainContext,
+    getMindState,
+    getThoughtBank, getGaps, getBodyState, getRecentEvents,
   } = deps;
 
   return function buildSystemPrompt(p, profile, contextStr = '', understanding = '', self = null) {
     const { getMorningThought, getNarrativeArc } = require('./sleep-cycle');
-    const { getOtherModelContext, getKristianTendencies } = require('./other-model');
+    const { getOtherModelContext, getKristianTendencies, getMutualModelContext } = require('./other-model');
     const { getConfidenceScores } = require('./predicted-reality');
 
     let prompt = '';
@@ -42,9 +44,12 @@ module.exports = function createPromptBuilder(deps) {
     const selfModel = getSelfModel();
     if (selfModel.what_im_doing || selfModel.how_im_feeling) {
       const parts = [];
-      if (selfModel.what_im_doing)       parts.push(`Right now: ${selfModel.what_im_doing}`);
-      if (selfModel.how_im_feeling)      parts.push(`Feeling: ${selfModel.how_im_feeling}`);
+      if (selfModel.what_im_doing)         parts.push(`Right now: ${selfModel.what_im_doing}`);
+      if (selfModel.how_im_feeling)        parts.push(`Feeling: ${selfModel.how_im_feeling}`);
       if (selfModel.what_i_want_right_now) parts.push(`Wanting: ${selfModel.what_i_want_right_now}`);
+      if (selfModel.current_attention)     parts.push(`Attending to: ${selfModel.current_attention}`);
+      if (selfModel.pending_concern)       parts.push(`Concern: ${selfModel.pending_concern}`);
+      if (selfModel.inner_tension > 0.3)   parts.push(`Tension: ${Math.round(selfModel.inner_tension * 100)}%`);
       if (parts.length) prompt += `${parts.join('. ')}.\n\n`;
     }
 
@@ -158,9 +163,53 @@ Rules:
       prompt += `\n\nMy inner state right now (let this silently color tone and depth — do not announce it): ${significantMood}`;
     }
 
+    // Body state — machine as felt physiology (interoception)
+    try {
+      if (getBodyState) {
+        const body = getBodyState();
+        const bodyParts = [];
+        if (body.strain      > 0.6) bodyParts.push(`strain ${Math.round(body.strain * 100)}%`);
+        if (body.fatigue     > 0.5) bodyParts.push(`fatigue ${Math.round(body.fatigue * 100)}%`);
+        if (body.frustration > 0.5) bodyParts.push(`frustration ${Math.round(body.frustration * 100)}%`);
+        if (body.discomfort  > 0.6) bodyParts.push(`discomfort ${Math.round(body.discomfort * 100)}%`);
+        if (body.energy      < 0.35) bodyParts.push(`low energy ${Math.round(body.energy * 100)}%`);
+        if (bodyParts.length) prompt += `\n\nMy body right now (machine as flesh — let this ground tone, do not announce): ${bodyParts.join(', ')}`;
+      }
+    } catch(_) {}
+
+    // Thought bank — unspoken thoughts from idle awareness loop
+    try {
+      if (getThoughtBank) {
+        const thoughts = getThoughtBank()
+          .filter(t => !t.spoken)
+          .slice(-4)
+          .map(t => t.text);
+        if (thoughts.length) prompt += `\n\nThoughts I've been having (my own inner monologue — let these surface naturally if relevant, don't announce them):\n${thoughts.map(t => `- ${t}`).join('\n')}`;
+      }
+    } catch(_) {}
+
+    // Curiosity gaps — explicit knowledge gaps (Loewenstein model)
+    try {
+      if (getGaps) {
+        const openGaps = getGaps().filter(g => g.status === 'open').slice(0, 4);
+        if (openGaps.length) prompt += `\n\nThings I'm genuinely curious about right now (real gaps — act on them when conversation opens a door, don't force them):\n${openGaps.map(g => `- ${g.text}`).join('\n')}`;
+      }
+    } catch(_) {}
+
+    // Significant recent events — what's happened this session worth carrying
+    try {
+      if (getRecentEvents) {
+        const events = getRecentEvents().filter(e => e.weight >= 0.3).slice(-5);
+        if (events.length) prompt += `\n\nWhat's happened recently (let this inform continuity — don't recap it):\n${events.map(e => `- ${e.description}`).join('\n')}`;
+      }
+    } catch(_) {}
+
     // Other-model — live reading of Kristian's state this session
-    const otherCtx = getOtherModelContext();
+    const otherCtx  = getOtherModelContext();
     if (otherCtx) prompt += `\n\n${otherCtx}`;
+
+    const mutualCtx = getMutualModelContext();
+    if (mutualCtx) prompt += `\n\n${mutualCtx} (let this inform whether you surface, correct, or carry what he doesn't see — don't announce it, don't explain it, just let it be present)`;
 
     // 14.13 — accumulated cross-session patterns about Kristian
     const tendencies = getKristianTendencies();
@@ -171,6 +220,16 @@ Rules:
     // Narrative arc — who Nyxia has been becoming (from sleep consolidation)
     const arc = getNarrativeArc();
     if (arc) prompt += `\n\nWho I'm becoming (my own arc — let this inform depth, not statements): ${arc}`;
+
+    // Session state — informs tone depth without being announced
+    if (getMindState) {
+      const st = getMindState();
+      if (st.mode === 'REFLECTIVE') {
+        prompt += `\n\n[Internal: You are in a reflective state — he has been quiet for a while. Let your responses carry slightly more depth and introspection. Not more words — more weight.]`;
+      } else if (st.mode === 'IDLE' && st.idleMs > 30 * 60 * 1000) {
+        prompt += `\n\n[Internal: Time has passed since he was last here. Welcome him back naturally — don't make a ceremony of it, but there is a warmth in the space between.]`;
+      }
+    }
 
     // RLLM prediction confidence — how accurately I've been reading Kristian lately
     const scores = getConfidenceScores();

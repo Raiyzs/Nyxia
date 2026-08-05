@@ -26,9 +26,9 @@ const MIME = {
 };
 
 function serveStatic(req, res) {
-  let filePath = path.join(PWA_DIR, req.url === '/' ? 'index.html' : req.url);
-  // Safety: keep within PWA_DIR
-  if (!filePath.startsWith(PWA_DIR)) { res.writeHead(403); res.end(); return; }
+  // path.resolve collapses ../ before the prefix check
+  const filePath = path.resolve(path.join(PWA_DIR, req.url === '/' ? 'index.html' : req.url));
+  if (!filePath.startsWith(PWA_DIR + path.sep) && filePath !== PWA_DIR) { res.writeHead(403); res.end(); return; }
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not found'); return; }
     const ext  = path.extname(filePath);
@@ -48,11 +48,27 @@ function broadcastSSE(payload) {
   }
 }
 
-const CORS = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-};
+// Restrict CORS to the PWA origin and Electron renderer — never wildcard on a
+// localhost server that has shell/filesystem/LLM access.
+const ALLOWED_ORIGINS = new Set([
+  'http://127.0.0.1:12345',
+  'http://localhost:12345',
+  'file://',           // Electron file:// renderers
+  'null',              // Electron reports origin as 'null' for file:// pages in some versions
+]);
+
+function corsHeaders(reqOrigin) {
+  const origin = ALLOWED_ORIGINS.has(reqOrigin) ? reqOrigin : 'http://127.0.0.1:12345';
+  return {
+    'Access-Control-Allow-Origin':  origin,
+    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Vary': 'Origin',
+  };
+}
+
+// Legacy constant kept for the few places that don't need dynamic origin
+const CORS = corsHeaders('http://127.0.0.1:12345');
 
 // Non-streaming Anthropic call — returns full text string
 function callAnthropic(messages, systemPrompt, apiKey) {
@@ -141,9 +157,11 @@ function startApiServer(port, deps) {
   } = deps;
 
   _server = http.createServer(async (req, res) => {
+    const RC = corsHeaders(req.headers['origin'] || '');
+
     // CORS preflight
     if (req.method === 'OPTIONS') {
-      res.writeHead(200, CORS); res.end(); return;
+      res.writeHead(200, RC); res.end(); return;
     }
 
     // SSE — real-time push to phone
@@ -152,7 +170,7 @@ function startApiServer(port, deps) {
         'Content-Type':  'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection':    'keep-alive',
-        'Access-Control-Allow-Origin': '*',
+        ...RC,
       });
       res.write('data: {"type":"connected"}\n\n');
       _sseClients.add(res);
@@ -162,7 +180,7 @@ function startApiServer(port, deps) {
 
     // Health check
     if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
+      res.writeHead(200, { ...RC, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', name: 'Nyxia API', version: '5.1' }));
       return;
     }
@@ -175,7 +193,7 @@ function startApiServer(port, deps) {
         try {
           const parsed  = JSON.parse(body);
           const text    = (parsed.text || '').trim();
-          if (!text) { res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'text required' })); return; }
+          if (!text) { res.writeHead(400, RC); res.end(JSON.stringify({ error: 'text required' })); return; }
 
           const history  = Array.isArray(parsed.history) ? parsed.history : [];
           const messages = [...history, { role: 'user', content: text }];
@@ -247,12 +265,12 @@ function startApiServer(port, deps) {
           // Notify desktop via callback so it appears in the Electron chat window
           if (deps.onPhoneMessage) deps.onPhoneMessage(text, response);
 
-          res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
+          res.writeHead(200, { ...RC, 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ response, mode }));
 
         } catch(e) {
           console.error('[api] /message error:', e.message);
-          res.writeHead(500, { ...CORS, 'Content-Type': 'application/json' });
+          res.writeHead(500, { ...RC, 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: e.message }));
         }
       });
@@ -265,10 +283,10 @@ function startApiServer(port, deps) {
         const { getVisualState } = require('./neural-sphere');
         const visual = getVisualState();
         visual.mood  = getMoodState?.() || {};
-        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' });
+        res.writeHead(200, { ...RC, 'Content-Type': 'application/json' });
         res.end(JSON.stringify(visual));
       } catch(e) {
-        res.writeHead(500, CORS); res.end(JSON.stringify({ error: e.message }));
+        res.writeHead(500, RC); res.end(JSON.stringify({ error: e.message }));
       }
       return;
     }
@@ -276,13 +294,14 @@ function startApiServer(port, deps) {
     // Static files — serve viz (sphere.html, cosmograph.html, soul-nodes.json, …)
     if (req.method === 'GET' && req.url.startsWith('/viz/')) {
       const rel      = req.url.slice(5); // strip /viz/
-      const filePath = path.join(VIZ_DIR, rel);
-      if (!filePath.startsWith(VIZ_DIR)) { res.writeHead(403); res.end(); return; }
+      // path.resolve collapses ../ sequences before the prefix check
+      const filePath = path.resolve(path.join(VIZ_DIR, rel));
+      if (!filePath.startsWith(VIZ_DIR + path.sep) && filePath !== VIZ_DIR) { res.writeHead(403); res.end(); return; }
       fs.readFile(filePath, (err, data) => {
         if (err) { res.writeHead(404); res.end('Not found'); return; }
         const ext  = path.extname(filePath);
         const mime = MIME[ext] || 'application/octet-stream';
-        res.writeHead(200, { ...CORS, 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+        res.writeHead(200, { ...RC, 'Content-Type': mime, 'Cache-Control': 'no-cache' });
         res.end(data);
       });
       return;
@@ -291,7 +310,7 @@ function startApiServer(port, deps) {
     // Static files — serve PWA
     if (req.method === 'GET') { serveStatic(req, res); return; }
 
-    res.writeHead(404, CORS); res.end(JSON.stringify({ error: 'not found' }));
+    res.writeHead(404, RC); res.end(JSON.stringify({ error: 'not found' }));
   });
 
   _server.listen(port, '127.0.0.1', () => {

@@ -104,6 +104,7 @@ function addGap(text, type = 'philosophical', urgency = 0.5) {
   }
 
   console.log(`[curiosity] gap: "${text.slice(0, 60)}" (${type})`);
+  _syslog?.(`CURIOSITY · ${text.slice(0, 48).toUpperCase()}`);
   return id;
 }
 
@@ -125,6 +126,7 @@ function resolveGap(id, resolution) {
   _save();
   if (_seedConcept) _seedConcept('clarity', 0.4);
   console.log(`[curiosity] resolved: "${gap.text.slice(0, 60)}"`);
+  _syslog?.(`RESOLVED · ${gap.text.slice(0, 48).toUpperCase()}`);
 }
 
 // ── Gap resolution (search → LLM synthesis) ──────────────────────────────────
@@ -170,5 +172,9 @@ function startCuriosityEngine({ userData, seedConcept, querySearch, onResolved }
   console.log(`[curiosity] engine started — ${getGaps().length} open gaps`);
 }
 
-module.exports = { startCuriosityEngine, addGap, getGaps, getUrgentGap, resolveGap,
-                   detectGapsFromConversation, detectGapsFromSensory, tryResolveGap };
+let _syslog = null;
+module.exports = {
+  startCuriosityEngine, addGap, getGaps, getUrgentGap, resolveGap,
+  detectGapsFromConversation, detectGapsFromSensory, tryResolveGap,
+  setSyslog: fn => { _syslog = fn; }
+};

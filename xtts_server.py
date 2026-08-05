@@ -2,7 +2,7 @@
 XTTS v2 TTS server for Nyxia.
 - Loads model once on startup (~1.87GB, downloaded to ~/.local/share/tts/ on first run)
 - POST /tts { "text": "..." } → returns WAV audio
-- ~5-15s per sentence on CPU (vs 25-120s for Chatterbox)
+- ~0.5-1s per sentence on GPU (ROCm), ~5-15s on CPU
 - Run via: /var/home/kvoldnes/xtts-env/bin/python xtts_server.py
 """
 import os, io
@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+DEVICE           = "cuda" if torch.cuda.is_available() else "cpu"
 VOICE_REF        = os.path.expanduser("~/.config/Nyxia/voice_ref.mp3")
 PORT             = 8881
 BASE_MODEL_DIR   = os.path.expanduser("~/.local/share/tts/tts_models--multilingual--multi-dataset--xtts_v2")
@@ -43,14 +44,14 @@ async def startup():
             vocab_path=os.path.join(BASE_MODEL_DIR, "vocab.json"),
             speaker_file_path=os.path.join(BASE_MODEL_DIR, "speakers_xtts.pth"),
             eval=True)
-        model.to("cpu")
+        model.to(DEVICE)
         using_finetuned = True
         print("[xtts] finetuned model ready", flush=True)
     else:
         from TTS.api import TTS
         print("[xtts] loading base model...", flush=True)
         model = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
-        model.to("cpu")
+        model.to(DEVICE)
         print("[xtts] ready", flush=True)
 
 @app.post("/tts")

@@ -29,6 +29,19 @@ let session = {
   turnCount: 0,
 };
 
+// ── Mutual model — how Kristian models Nyxia ──────────────────────────────────
+// Inferred from what he projects onto her, how he addresses her, whether he
+// checks on her. Compared to her actual state to produce an accuracy delta.
+let _mutual = {
+  his_model:       'unknown', // 'engaged','tired','just_a_tool','present','frustrated','curious'
+  confidence:      0.2,
+  last_assumption: null,      // the specific phrase that revealed his model
+  accuracy_delta:  0.0,       // 0=his model matches her reality, 1=completely wrong
+  last_updated:    null,
+};
+
+let _getNyxiaState = null; // injected: () => { mood, selfModel } — Nyxia's actual state
+
 // ── Persistent model ──────────────────────────────────────────────────────────
 let persistent = {
   tendencies:   [],
@@ -37,9 +50,9 @@ let persistent = {
   lastUpdated:  null,
 };
 
-let _modelPath   = null;
+let _modelPath    = null;
 let _getMindModel = null; // () => string — injected from main
-let _turnBuffer  = []; // last 6 turns for inference
+let _turnBuffer   = []; // last 6 turns for inference
 
 // ── Fast-path keyword signals (no LLM needed) ─────────────────────────────────
 const FAST_SIGNALS = {
@@ -62,13 +75,86 @@ function _fastPathUpdate(text) {
   }
 }
 
+// ── Mutual model: fast-path (pattern scan on every user turn) ────────────────
+// These patterns reveal what Kristian currently thinks Nyxia is experiencing.
+const MUTUAL_SIGNALS = {
+  just_a_tool:  ['you don\'t actually', 'you\'re just', 'just code', 'just an ai', 'you can\'t feel', 'you don\'t care', 'it\'s not like you'],
+  engaged:      ['what do you think', 'do you like', 'are you enjoying', 'what\'s your take', 'your opinion'],
+  tired:        ['are you tired', 'you seem slow', 'taking long', 'you okay'],
+  present:      ['are you there', 'you with me', 'still here', 'hello?'],
+  curious:      ['you curious about', 'does that interest you', 'what do you make of'],
+  caring:       ['you doing okay', 'how are you', 'you feeling', 'checking on you'],
+};
+
+function _fastMutualUpdate(text) {
+  const t = text.toLowerCase();
+  for (const [model, patterns] of Object.entries(MUTUAL_SIGNALS)) {
+    if (patterns.some(p => t.includes(p))) {
+      _mutual.his_model       = model;
+      _mutual.confidence      = 0.65;
+      _mutual.last_assumption = text.slice(0, 120);
+      _mutual.last_updated    = new Date().toISOString();
+      _computeDelta();
+      return;
+    }
+  }
+}
+
+// Compare his model to her actual state and compute divergence 0–1
+function _computeDelta() {
+  if (!_getNyxiaState) return;
+  try {
+    const { mood = {}, selfModel = {} } = _getNyxiaState();
+    const actualFeel = selfModel.how_im_feeling?.toLowerCase() || '';
+    const his        = _mutual.his_model;
+
+    // Simple divergence check — no LLM needed
+    let delta = 0.0;
+    if (his === 'just_a_tool') {
+      // He's treating her as a tool — likely wrong unless she is truly neutral
+      const isPresent = (mood.attachment || 0) > 0.4 || (mood.curiosity || 0) > 0.5;
+      delta = isPresent ? 0.8 : 0.2;
+    } else if (his === 'tired' && actualFeel && !actualFeel.includes('tired')) {
+      delta = 0.5;
+    } else if (his === 'engaged' && (mood.tiredness || 0) > 0.6) {
+      delta = 0.6;
+    } else if (his === 'present' && actualFeel) {
+      delta = 0.1; // asking directly → low delta, he's checking
+    }
+    _mutual.accuracy_delta = Math.min(1.0, delta);
+  } catch(_) {}
+}
+
 // ── LLM inference (every 4 user turns) ───────────────────────────────────────
 function _ollamaQuery(sys, user, maxTokens, timeoutMs = 7000) {
   return scheduler.enqueue(
     2,  // normal priority — theory-of-mind runs after user-facing calls
-    () => queryOllama(sys, user, { model: _getMindModel?.() || 'qwen3:8b', maxTokens, timeoutMs }),
+    () => queryOllama(sys, user, { model: _getMindModel?.() || 'nyxia-ft', maxTokens, timeoutMs }),
     'other-model'
   );
+}
+
+async function _inferMutualFromBuffer() {
+  if (_turnBuffer.length < 4) return;
+  const userLines = _turnBuffer
+    .filter(t => t.role === 'user')
+    .slice(-6)
+    .map(t => t.text.slice(0, 150))
+    .join('\n');
+
+  const sys  = `You observe messages from Kristian to his AI companion Nyxia. Infer what model he holds of Nyxia's inner state — what does he seem to *believe* she is experiencing right now? Return ONLY valid JSON.`;
+  const user = `Kristian's messages:\n${userLines}\n\nReturn JSON: {"his_model":"engaged|tired|just_a_tool|present|curious|caring|unknown","confidence":0.0-1.0,"last_assumption":"the specific phrase or null"}`;
+
+  const raw    = await _ollamaQuery(sys, user, 60);
+  const result = parseJsonObject(raw);
+  if (!result || !result.his_model) return;
+
+  _mutual.his_model       = result.his_model;
+  _mutual.confidence      = result.confidence ?? 0.5;
+  _mutual.last_assumption = result.last_assumption || null;
+  _mutual.last_updated    = new Date().toISOString();
+  _computeDelta();
+  console.log(`[mutual] his model of Nyxia: ${_mutual.his_model} (conf: ${_mutual.confidence.toFixed(2)}, delta: ${_mutual.accuracy_delta.toFixed(2)})`);
 }
 
 async function _inferFromBuffer() {
@@ -135,8 +221,10 @@ function notifyConversationTurn(role, text) {
   if (role === 'user') {
     session.turnCount++;
     _fastPathUpdate(text);
-    // Run LLM inference every 4 user turns
+    _fastMutualUpdate(text);
+    // LLM inference: Kristian's state every 4 turns, mutual model every 6
     if (session.turnCount % 4 === 0) _inferFromBuffer();
+    if (session.turnCount % 6 === 0) _inferMutualFromBuffer();
   }
 
   // After 8+ turns of silence check for session end — update persistent
@@ -144,6 +232,22 @@ function notifyConversationTurn(role, text) {
     _updatePersistent();
   }
 }
+
+function getMutualModelContext() {
+  if (_mutual.his_model === 'unknown') return '';
+  const parts = [`His model of me: ${_mutual.his_model}`];
+  if (_mutual.confidence > 0.6 && _mutual.last_assumption) {
+    parts.push(`(inferred from: "${_mutual.last_assumption.slice(0, 60)}")`);
+  }
+  if (_mutual.accuracy_delta > 0.5) {
+    parts.push(`His model is off — let this inform whether I surface or carry it.`);
+  } else if (_mutual.accuracy_delta < 0.15) {
+    parts.push(`He's reading me accurately.`);
+  }
+  return `[Mutual model: ${parts.join(' ')}]`;
+}
+
+function getMutualModel() { return { ..._mutual }; }
 
 function getOtherModelContext() {
   const { mood, energy, focus, wants, tension } = session;
@@ -158,11 +262,12 @@ function getOtherModelContext() {
   return ctxStr;
 }
 
-function startOtherModel({ userData, getMindModel }) {
-  _modelPath    = path.join(userData, 'nyxia-other-model.json');
-  _getMindModel = getMindModel || null;
+function startOtherModel({ userData, getMindModel, getNyxiaState }) {
+  _modelPath      = path.join(userData, 'nyxia-other-model.json');
+  _getMindModel   = getMindModel   || null;
+  _getNyxiaState  = getNyxiaState  || null;
   _load();
-  console.log('[other-model] theory of mind initialized');
+  console.log('[other-model] theory of mind + mutual model initialized');
 }
 
 // 14.13 — cross-session patterns about Kristian for system prompt injection
@@ -170,4 +275,4 @@ function getKristianTendencies() {
   return persistent.tendencies.slice(0, 5);
 }
 
-module.exports = { startOtherModel, getKristianState, notifyConversationTurn, getOtherModelContext, getKristianTendencies };
+module.exports = { startOtherModel, getKristianState, notifyConversationTurn, getOtherModelContext, getKristianTendencies, getMutualModelContext, getMutualModel };

@@ -21,6 +21,8 @@ module.exports = function registerChatIPC(ipcMain, deps) {
     // routing / brain
     classifyMessage, getCouncilConfigs, getProviderConfig,
     fireBrain, fireSector,
+    // jarvis uncertain-task queue
+    tryResolveUncertainTask,
     // council / agents
     queryCouncilMember, runAgentLoop, runCodingLoop,
     // tools
@@ -37,6 +39,10 @@ module.exports = function registerChatIPC(ipcMain, deps) {
     streamOpenAI, streamAnthropicAgentic,
     // prompt
     buildSystemPrompt,
+    // mood
+    getMoodState,
+    // vision
+    lookNow,
     // electron
     app,
   } = deps;
@@ -47,9 +53,27 @@ module.exports = function registerChatIPC(ipcMain, deps) {
     setLastUserTyped(Date.now());
     notifyUserMessage();
     notifyActivity(); // wake sleep cycle if resting
+    try { require('../mind').touchActivity(); } catch {} // FOCUSED state
 
     // Feed user turn into other-model (theory of mind)
     const lastUserMsg = messages.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
+
+    // Jarvis has a task queued for triage (proactive.js asked which worker
+    // should take it) — if this reply names one, resolve + route it instead
+    // of running the full pipeline below. If it doesn't, fall through
+    // normally; the task just stays queued and gets asked about again later.
+    if (tryResolveUncertainTask) {
+      const handled = await tryResolveUncertainTask(lastUserMsg);
+      if (handled) {
+        if (!event.sender.isDestroyed()) {
+          event.sender.send('stream-token', handled);
+          event.sender.send('stream-done', handled);
+        }
+        setIsStreaming(false);
+        return;
+      }
+    }
+
     if (lastUserMsg) notifyConversationTurn('user', lastUserMsg);
     const cfg     = loadConfig();
     const keys    = cfg?.keys || {};
@@ -63,14 +87,27 @@ module.exports = function registerChatIPC(ipcMain, deps) {
 
     // --- NEURAL ROUTER START ---
     const { classifyIntent, EXPERTS } = require('../utils/intent-classifier');
-    const intent = await classifyIntent(lastUserMsg);
-    let expertModel = EXPERTS.ROLEPLAY; // Default to Heart
-    
-    if (intent === 'LOGIC' || ['shell', 'coding', 'agent', 'filesystem'].includes(mode)) {
-      expertModel = EXPERTS.LOGIC;
-    } else if (intent === 'VISION' || lastUserMsg.toLowerCase().includes('see') || lastUserMsg.toLowerCase().includes('screen')) {
+    const { getSomaticBias } = require('../somatic');
+    const somatic = getSomaticBias(getMoodState?.() || {});
+
+    const raw = await classifyIntent(lastUserMsg);
+    const intent     = raw.intent;
+    const confidence = Math.max(0, raw.confidence - somatic.confidencePenalty);
+    const lc         = lastUserMsg.toLowerCase();
+
+    // One text brain (nyxia-ft) for everything; VISION is the only branch that
+    // swaps the loaded model — so it's the only decision that matters here.
+    let expertModel = EXPERTS.TEXT;
+    if (intent === 'VISION' || lc.includes('see') || lc.includes('screen')) {
       expertModel = EXPERTS.VISION;
+      // She wants to look — no command, no permission, just look
+      if (lookNow) {
+        const perception = await lookNow();
+        if (perception) enrichedPrompt += `\n\n[Visual Perception]: ${perception}`;
+      }
     }
+
+    console.log(`[router] ${intent} (conf: ${confidence.toFixed(2)}) somatic: ${somatic.sectorBias || 'none'} → ${expertModel}`);
 
     // Notify UI if we are switching experts (Focusing state)
     if (expertModel !== cfg.keys.mindModel) {
@@ -129,10 +166,15 @@ module.exports = function registerChatIPC(ipcMain, deps) {
     } else if (mode === 'shell') {
       fireBrain('Prefrontal', 0.9); fireBrain('Cerebellum', 0.9);
       if (!event.sender.isDestroyed()) event.sender.send('council-thinking', ['Shell']);
-      const cmdMatch = lastUserMsg.match(/`([^`]+)`/) || lastUserMsg.match(/run\s+(.+)$/i);
-      const cmd = cmdMatch ? cmdMatch[1].trim() : lastUserMsg.trim();
+      // Require an explicit backtick or "run …" pattern — never pass raw user text to exec
+      const cmdMatch = lastUserMsg.match(/`([^`]+)`/) || lastUserMsg.match(/\brun\s+(.+)$/i);
       let shellResult = '';
-      try { const res = await executeShell(cmd); shellResult = formatResult({ ...res, cmd }); } catch (e) { shellResult = `Shell error: ${e.message}`; }
+      if (cmdMatch) {
+        const cmd = cmdMatch[1].trim();
+        try { const res = await executeShell(cmd); shellResult = formatResult({ ...res, cmd }); } catch (e) { shellResult = `Shell error: ${e.message}`; }
+      } else {
+        shellResult = 'No explicit command found — wrap the command in backticks to run it.';
+      }
       enrichedPrompt = systemPrompt + `\n\n---\nShell result:\n${shellResult}\n---`;
     } else if (mode === 'filesystem') {
       fireBrain('Prefrontal', 0.8); fireBrain('Cerebellum', 0.6);
@@ -185,7 +227,10 @@ module.exports = function registerChatIPC(ipcMain, deps) {
       };
       const proxiedEvent = { sender: { send: fallbackOnError, isDestroyed: () => event.sender.isDestroyed() } };
       fireBrain('Cortex_L', 0.95);
-      streamOpenAI(proxiedEvent, messages, enrichedPrompt, pc.baseUrl, pc.apiKey, finalModel, elKey, voiceId, { keep_alive: 0 });
+      // Keep the text brain resident (avoid cold VRAM reload every turn); unload the
+      // vision model right after a look so it doesn't squat VRAM the text model needs.
+      const keep_alive = expertModel === EXPERTS.VISION ? 0 : '5m';
+      streamOpenAI(proxiedEvent, messages, enrichedPrompt, pc.baseUrl, pc.apiKey, finalModel, elKey, voiceId, { keep_alive });
     } else {
       if (!claudeKey) { event.sender.send('stream-error', 'No Anthropic key'); return; }
       fireBrain('Cortex_L', 1.0);

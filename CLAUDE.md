@@ -1,6 +1,7 @@
 # CLAUDE.md — Nyxia Project Rules
 > These rules apply every session, every day.
 > Read this file before doing anything else.
+> For a full map of the codebase (every module, how data flows, where to make changes), see `ARCHITECTURE.md` in this same folder.
 
 ---
 

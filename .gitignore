@@ -37,6 +37,15 @@ nyxia-*.Modelfile
 
 # Treningsdata og modellvekter
 training_data/
+training-data/
+*.gguf
+nyxia-part-*
+nyxia-merged/
+Finetuned_Nyxia_qwen/
+unsloth_compiled_cache/
+Modelfile
+hand_landmarker.task
+Claude session resume/
 
 # Graphify output (kan inneholde privat data)
 src/graphify-out/

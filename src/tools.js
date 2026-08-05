@@ -29,7 +29,28 @@ function extractUrl(text) {
   return m[0].startsWith('http') ? m[0] : 'https://' + m[0];
 }
 
-async function fetchPage(url) {
+// Block SSRF targets: loopback, RFC-1918, link-local, and non-http(s) schemes.
+function _isSsrfBlocked(urlStr) {
+  let parsed;
+  try { parsed = new URL(urlStr); } catch { return true; }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true;
+  const host = parsed.hostname.toLowerCase();
+  // Block loopback and private ranges by hostname pattern
+  if (host === 'localhost') return true;
+  if (/^127\./.test(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  if (/^169\.254\./.test(host)) return true;
+  if (host === '::1' || host === '[::1]') return true;
+  return false;
+}
+
+async function fetchPage(url, _depth = 0) {
+  if (_isSsrfBlocked(url)) {
+    console.warn('[fetch] blocked SSRF target:', url);
+    return null;
+  }
   try {
     const parsedUrl = new URL(url);
     const mod = parsedUrl.protocol === 'https:' ? require('https') : require('http');
@@ -39,7 +60,10 @@ async function fetchPage(url) {
         timeout: 10000,
       }, res => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          fetchPage(res.headers.location).then(resolve).catch(reject);
+          if (_depth >= 3) { resolve(''); return; } // cap redirect chain
+          const next = res.headers.location;
+          if (_isSsrfBlocked(next)) { resolve(''); return; }
+          fetchPage(next, _depth + 1).then(resolve).catch(reject);
           return;
         }
         let body = '';

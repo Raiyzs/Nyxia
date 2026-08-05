@@ -73,7 +73,7 @@
 </div>
 
 <script>
-const { ipcRenderer } = require('electron');
+// ipcRenderer accessed via contextBridge (see preload-brain-panel.js)
 
 // ── Sector definitions ──────────────────────────────────────────────────────
 const SECTORS = {
@@ -315,7 +315,7 @@ function frame(ts) {
 requestAnimationFrame(frame);
 
 // ── IPC: receive brain-fire events ──────────────────────────────────────────
-ipcRenderer.on('brain-fire', (_, { sector, intensity, decay, label }) => {
+window.brainPanel.onBrainFire(({ sector, intensity, decay, label }) => {
   const key = sector?.toLowerCase().replace(' ', '_');
   if (!(key in spikes)) return;
   spikes[key] = Math.min(1.0, (spikes[key] || 0) + intensity);

@@ -147,6 +147,30 @@ body.cursor-hover #cursor-dot { background:rgba(192,132,252,0.9); }
 #hh-close:hover { color:rgba(192,132,252,0.9); }
 
 #handheld::after { content:''; position:absolute; inset:0; pointer-events:none; z-index:102; opacity:0.08; background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,212,255,0.06) 3px,rgba(0,212,255,0.06) 4px); }
+#hh-resize {
+  position:absolute; bottom:18px; right:6px; width:16px; height:16px;
+  cursor:se-resize; z-index:110; opacity:0.35; transition:opacity 0.2s;
+  background:radial-gradient(circle, rgba(0,212,255,0.7) 1px, transparent 1px) 0 0 / 5px 5px;
+}
+#hh-resize:hover { opacity:0.85; }
+#hand-cursor {
+  display:none; position:fixed; z-index:999; pointer-events:none;
+  width:28px; height:28px; margin:-14px 0 0 -14px;
+  border:1.5px solid rgba(192,132,252,0.8); border-radius:50%;
+  box-shadow:0 0 12px rgba(192,132,252,0.5), 0 0 24px rgba(192,132,252,0.2);
+  transition:width 0.12s, height 0.12s, margin 0.12s, box-shadow 0.12s, border-color 0.12s;
+}
+#hand-cursor::after {
+  content:''; position:absolute; top:50%; left:50%;
+  width:5px; height:5px; margin:-2.5px;
+  border-radius:50%; background:rgba(192,132,252,0.9);
+  box-shadow:0 0 6px rgba(192,132,252,0.9);
+}
+#hand-cursor.pinch {
+  width:10px; height:10px; margin:-5px 0 0 -5px;
+  border-color:rgba(74,222,128,0.9);
+  box-shadow:0 0 16px rgba(74,222,128,0.7);
+}
 
 #hh-tabs { display:flex; border-bottom:1px solid rgba(0,212,255,0.1); }
 .hh-tab {
@@ -206,6 +230,29 @@ body.cursor-hover #cursor-dot { background:rgba(192,132,252,0.9); }
 }
 #hh-send:hover { color:rgba(0,212,255,0.9); background:rgba(0,212,255,0.06); }
 #hh-send:disabled { opacity:0.3; cursor:default; }
+#hh-attach, #hh-mic, #hh-call {
+  width:36px; height:42px; display:flex; align-items:center; justify-content:center;
+  background:none; border:none; border-left:1px solid rgba(0,212,255,0.1);
+  cursor:pointer; color:rgba(0,212,255,0.3); transition:color 0.2s, background 0.2s;
+  font-size:13px; flex-shrink:0;
+}
+#hh-attach { border-left:none; }
+#hh-attach:hover, #hh-mic:hover, #hh-call:hover { color:rgba(0,212,255,0.85); background:rgba(0,212,255,0.05); }
+#hh-attach.has-img { color:rgba(192,132,252,0.8); }
+#hh-mic.active { color:rgba(239,68,68,0.85); animation:mic-pulse 0.7s ease-in-out infinite; }
+#hh-call.active { color:rgba(74,222,128,0.85); }
+@keyframes mic-pulse { 0%,100%{opacity:1}50%{opacity:0.35} }
+#hh-img-preview {
+  display:none; padding:6px 12px 6px; border-top:1px solid rgba(0,212,255,0.08);
+  position:relative; align-items:center; gap:8px;
+}
+#hh-img-preview img { width:52px; height:52px; object-fit:cover; border-radius:3px; border:1px solid rgba(0,212,255,0.2); display:block; }
+#hh-img-clear {
+  background:rgba(0,8,20,0.9); border:1px solid rgba(0,212,255,0.2);
+  color:rgba(0,212,255,0.6); cursor:pointer; font-size:9px; padding:2px 5px;
+  border-radius:2px; letter-spacing:1px; font-family:monospace;
+}
+#hh-img-clear:hover { color:rgba(239,68,68,0.8); border-color:rgba(239,68,68,0.3); }
 
 /* ── SETTINGS TAB ── */
 #hh-settings { padding:14px; display:flex; flex-direction:column; gap:2px; height:302px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:rgba(0,212,255,0.2) transparent; }
@@ -333,6 +380,7 @@ body.cursor-hover #cursor-dot { background:rgba(192,132,252,0.9); }
 <div id="vignette"></div>
 <div id="scanlines"></div>
 <div id="cursor"><div id="cursor-dot"></div></div>
+<div id="hand-cursor"></div>
 
 <div class="hud" id="hud-tl">
   <div class="hud-title">// SYSTEM</div>
@@ -457,8 +505,30 @@ body.cursor-hover #cursor-dot { background:rgba(192,132,252,0.9); }
   <!-- CHAT panel -->
   <div class="hh-panel active" id="hh-panel-chat">
     <div id="hh-messages"></div>
+    <div id="hh-img-preview">
+      <img id="hh-preview-img" src="" alt=""/>
+      <button id="hh-img-clear">✕ CLEAR</button>
+    </div>
     <div id="hh-input-row">
+      <input type="file" id="hh-img-picker" accept="image/*" style="display:none">
+      <button id="hh-attach" title="Attach image">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <path d="M12 6.5L6.5 12C5.1 13.4 2.9 13.4 1.5 12C0.1 10.6 0.1 8.4 1.5 7L7.5 1C8.5 0 10.1 0 11.1 1C12.1 2 12.1 3.6 11.1 4.6L5.1 10.6C4.5 11.2 3.5 11.2 2.9 10.6C2.3 10 2.3 9 2.9 8.4L8.5 2.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+      </button>
       <textarea id="hh-input" placeholder="transmit message…" rows="1"></textarea>
+      <button id="hh-mic" title="Voice input [push to talk]">
+        <svg width="13" height="14" viewBox="0 0 13 14" fill="none">
+          <rect x="4" y="0.5" width="5" height="8" rx="2.5" stroke="currentColor" stroke-width="1.2"/>
+          <path d="M1.5 7C1.5 9.76 3.74 12 6.5 12C9.26 12 11.5 9.76 11.5 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="6.5" y1="12" x2="6.5" y2="13.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <button id="hh-call" title="Call mode — auto voice">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M2 1h3l1.5 3.5L4.5 6A8 8 0 0 0 7 8.5l1.5-2L12 8v3a1 1 0 0 1-1 1A10 10 0 0 1 1 2a1 1 0 0 1 1-1z" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
       <button id="hh-send" title="Send [Enter]">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path d="M2 8L14 8M10 4L14 8L10 12" stroke="rgba(0,212,255,0.8)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -502,9 +572,10 @@ body.cursor-hover #cursor-dot { background:rgba(192,132,252,0.9); }
       <div class="st-row">
         <span class="st-label">Core Model</span>
         <select class="st-select" id="st-model">
-          <option>claude-sonnet-4-6</option>
-          <option>claude-opus-4-7</option>
-          <option>claude-haiku-4-5-20251001</option>
+          <option value="nyxia-ft">nyxia-ft (local)</option>
+          <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+          <option value="claude-opus-4-7">claude-opus-4-7</option>
+          <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>
         </select>
       </div>
       <div class="st-row">
@@ -527,6 +598,7 @@ body.cursor-hover #cursor-dot { background:rgba(192,132,252,0.9); }
     <span id="hh-footer-id">NYX-TERM · SESSION_<span id="hh-session">----</span></span>
     <span id="hh-footer-ver">BUILD 2.4.1-α</span>
   </div>
+  <div id="hh-resize" title="Resize"></div>
 </div>
 
 <!-- ── Electron IPC bridge (runs in Node context before module) ── -->
@@ -557,6 +629,25 @@ ipcRenderer.invoke('load-history').then(hist => {
   });
 }).catch(() => {});
 
+// ── Hand cursor (webcam haptics) ──────────────────────────────────────────
+{
+  const hc = document.getElementById('hand-cursor');
+  let hideTimer = null;
+  ipcRenderer.on('hand-pos', (_, data) => {
+    if (!data) { hc.style.display = 'none'; return; }
+    hc.style.display = 'block';
+    hc.style.left = Math.round(data.x * window.innerWidth)  + 'px';
+    hc.style.top  = Math.round(data.y * window.innerHeight) + 'px';
+    hc.classList.toggle('pinch', !!data.pinch);
+    // Auto-hide after 2s of no events (hand left frame)
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => { hc.style.display = 'none'; }, 2000);
+  });
+}
+
+// ── Real syslog events from main process ──────────────────────────────────
+ipcRenderer.on('syslog', (_, line) => { if (typeof addLog === 'function') addLog(line); });
+
 // Mood polling — updates HUD bars every 5s
 function pollMood() {
   ipcRenderer.invoke('get-mood-state').then(mood => {
@@ -574,13 +665,28 @@ function pollMood() {
 pollMood();
 setInterval(pollMood, 5000);
 
-// IPC send — called by module script
-window._nyxSendIPC = async function(text) {
+// Direct Ollama fetch — no IPC roundtrip, no timeout limit
+window._nyxSendIPC = async function(text, img) {
   if (window._nyxChat.sending) return null;
   window._nyxChat.sending = true;
-  window._nyxChat.history.push({ role: 'user', content: text });
+  const userContent = img
+    ? [{ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.data}` } }, { type: 'text', text: text || '' }]
+    : text;
+  window._nyxChat.history.push({ role: 'user', content: userContent });
   try {
-    const reply = await ipcRenderer.invoke('claude-chat', window._nyxChat.history, window._nyxChat.systemPrompt);
+    const cfg = await ipcRenderer.invoke('get-config');
+    const model = img ? 'qwen2.5vl:7b' : (cfg?.llm?.model || cfg?.keys?.chatModel || 'nyxia-ft');
+    const messages = window._nyxChat.systemPrompt
+      ? [{ role: 'system', content: window._nyxChat.systemPrompt }, ...window._nyxChat.history]
+      : window._nyxChat.history;
+    const res = await fetch('http://127.0.0.1:11434/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, stream: false, max_tokens: 500, messages }),
+    });
+    const data = await res.json();
+    const reply = data.choices?.[0]?.message?.content?.trim() || null;
+    if (!reply) throw new Error('No response from Ollama');
     window._nyxChat.history.push({ role: 'assistant', content: reply });
     ipcRenderer.invoke('save-history', window._nyxChat.history).catch(() => {});
     return reply;
@@ -831,7 +937,14 @@ window.closeDetail=function(){document.getElementById('panel-detail').classList.
 function openDetail(mesh){
   const d=mesh.userData.data;
   document.getElementById('pd-title').textContent=d.title;
-  document.getElementById('pd-body').innerHTML=d.rows.map(([k,v])=>`<div class="pd-row"><span class="pd-k">${k}</span><span class="pd-v">${v}</span></div>`).join('');
+  const pdBody = document.getElementById('pd-body');
+  pdBody.innerHTML = '';
+  for (const [k, v] of d.rows) {
+    const row = document.createElement('div'); row.className = 'pd-row';
+    const kEl = document.createElement('span'); kEl.className = 'pd-k'; kEl.textContent = k;
+    const vEl = document.createElement('span'); vEl.className = 'pd-v'; vEl.textContent = v;
+    row.appendChild(kEl); row.appendChild(vEl); pdBody.appendChild(row);
+  }
   document.getElementById('panel-detail').classList.add('open');
 }
 
@@ -1733,20 +1846,152 @@ document.querySelectorAll('.hh-tab').forEach(tab => {
   window.addEventListener('mouseup', () => { dragging = false; });
 }
 
+// ── Resize ───────────────────────────────────────────────────────────────
+{
+  const grip = document.getElementById('hh-resize');
+  const msgs = document.getElementById('hh-messages');
+  const log  = document.getElementById('hh-log');
+  const sets = document.getElementById('hh-settings');
+  let resizing = false, rx = 0, ry = 0, rw = 0, rh = 0;
+  grip.addEventListener('mousedown', e => {
+    resizing = true;
+    rx = e.clientX; ry = e.clientY;
+    rw = handheld.offsetWidth;
+    rh = msgs.offsetHeight;
+    e.preventDefault(); e.stopPropagation();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!resizing) return;
+    const w = Math.max(280, Math.min(720, rw + (e.clientX - rx)));
+    const h = Math.max(140, Math.min(620, rh + (e.clientY - ry)));
+    handheld.style.width = w + 'px';
+    msgs.style.height    = h + 'px';
+    log.style.height     = h + 'px';
+    sets.style.height    = h + 'px';
+  });
+  window.addEventListener('mouseup', () => { resizing = false; });
+}
+
 // ── Chat ─────────────────────────────────────────────────────────────────
 const messagesEl = document.getElementById('hh-messages');
 const inputEl    = document.getElementById('hh-input');
 const sendBtn    = document.getElementById('hh-send');
 
-function addMsg(role, text) {
+// ── image attachment state ───────────────────────────────────────────────────
+let pendingImg = null;
+
+function clearImg() {
+  pendingImg = null;
+  document.getElementById('hh-img-preview').style.display = 'none';
+  document.getElementById('hh-preview-img').src = '';
+  document.getElementById('hh-attach').classList.remove('has-img');
+}
+
+document.getElementById('hh-attach').addEventListener('click', () => {
+  document.getElementById('hh-img-picker').click();
+});
+
+document.getElementById('hh-img-picker').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const url = reader.result;
+    pendingImg = { data: url.split(',')[1], mimeType: file.type || 'image/jpeg' };
+    document.getElementById('hh-preview-img').src = url;
+    document.getElementById('hh-img-preview').style.display = 'flex';
+    document.getElementById('hh-attach').classList.add('has-img');
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+});
+
+document.getElementById('hh-img-clear').addEventListener('click', clearImg);
+
+// ── mic / call state ─────────────────────────────────────────────────────────
+let callMode   = false;
+let micActive  = false;
+let mediaRec   = null;
+let micChunks  = [];
+
+async function speakReply(text) {
+  try {
+    const personality = await ipcRenderer.invoke('get-personality').catch(() => ({}));
+    const voiceId = personality?.voice?.voiceId || '';
+    if (!voiceId) return;
+    const b64 = await ipcRenderer.invoke('tts-speak', text, voiceId);
+    if (b64) new Audio('data:audio/mpeg;base64,' + b64).play();
+  } catch(e) {}
+}
+
+async function toggleMic() {
+  const btn = document.getElementById('hh-mic');
+  if (micActive) {
+    mediaRec?.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micChunks = [];
+    mediaRec = new MediaRecorder(stream);
+    mediaRec.ondataavailable = e => { if (e.data.size > 0) micChunks.push(e.data); };
+    mediaRec.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      micActive = false;
+      btn.classList.remove('active');
+      if (micChunks.length === 0) return;
+      const blob = new Blob(micChunks, { type: 'audio/webm' });
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const b64 = reader.result.split(',')[1];
+        addLog('STT · transcribing…');
+        const text = await ipcRenderer.invoke('transcribe-audio', b64).catch(() => null);
+        if (text) {
+          inputEl.value = text;
+          addLog('STT · ' + text.slice(0, 48));
+          if (callMode) sendMessage();
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+    mediaRec.start();
+    micActive = true;
+    btn.classList.add('active');
+    addLog('MIC · recording…');
+  } catch(e) {
+    addLog('MIC · error — ' + e.message);
+  }
+}
+
+function toggleCall() {
+  callMode = !callMode;
+  document.getElementById('hh-call').classList.toggle('active', callMode);
+  addLog(callMode ? 'CALL MODE · ACTIVE' : 'CALL MODE · OFF');
+}
+
+document.getElementById('hh-mic').addEventListener('click', toggleMic);
+document.getElementById('hh-call').addEventListener('click', toggleCall);
+
+// ── message helpers ──────────────────────────────────────────────────────────
+function addMsg(role, text, img) {
   const wrap = document.createElement('div');
   wrap.className = 'msg ' + role;
-  wrap.innerHTML = `<div class="msg-label">${role === 'user' ? 'YOU' : 'NYXIA'}</div><div class="msg-bubble">${text}</div>`;
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  if (text) bubble.textContent = text;
+  if (img) {
+    const im = document.createElement('img');
+    im.src = `data:${img.mimeType};base64,${img.data}`;
+    im.style.cssText = 'max-width:100%;border-radius:3px;margin-top:5px;display:block;border:1px solid rgba(0,212,255,0.15)';
+    bubble.appendChild(im);
+  }
+  wrap.innerHTML = `<div class="msg-label">${role === 'user' ? 'YOU' : 'NYXIA'}</div>`;
+  wrap.appendChild(bubble);
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return wrap;
 }
-window._addMsg = addMsg;
+window._addMsg = (role, content) => addMsg(role, typeof content === 'string' ? content : (content?.find?.(b => b.type === 'text')?.text || ''));
 
 function addTyping() {
   const wrap = document.createElement('div');
@@ -1759,18 +2004,21 @@ function addTyping() {
 
 async function sendMessage() {
   const text = inputEl.value.trim();
-  if (!text || window._nyxChat?.sending) return;
+  const img  = pendingImg;
+  if ((!text && !img) || window._nyxChat?.sending) return;
   inputEl.value = '';
+  clearImg();
   sendBtn.disabled = true;
-  addMsg('user', text);
-  addLog('TX · ' + text.slice(0, 48) + (text.length > 48 ? '…' : ''));
+  addMsg('user', text, img);
+  addLog('TX · ' + (text || '[image]').slice(0, 48) + ((text?.length > 48) ? '…' : ''));
   const typing = addTyping();
-  const reply = await window._nyxSendIPC(text);
+  const reply = await window._nyxSendIPC(text, img);
   typing.remove();
   if (reply) {
     addMsg('nyxia', reply);
     addLog('RX · ' + reply.slice(0, 48) + '…');
     showBubble(reply.slice(0, 80) + (reply.length > 80 ? '…' : ''), 6000);
+    if (callMode) speakReply(reply);
   }
   sendBtn.disabled = false;
   inputEl.focus();
@@ -1788,7 +2036,13 @@ function addLog(line) {
   const ts = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0') + ':' + String(now.getSeconds()).padStart(2,'0');
   const entry = document.createElement('div');
   entry.style.cssText = 'display:flex;gap:10px;';
-  entry.innerHTML = `<span style="color:rgba(0,212,255,0.25);flex-shrink:0">${ts}</span><span>${line}</span>`;
+  const tsSpan = document.createElement('span');
+  tsSpan.style.cssText = 'color:rgba(0,212,255,0.25);flex-shrink:0';
+  tsSpan.textContent = ts;
+  const lineSpan = document.createElement('span');
+  lineSpan.textContent = String(line);
+  entry.appendChild(tsSpan);
+  entry.appendChild(lineSpan);
   logEl.appendChild(entry);
   logEl.scrollTop = logEl.scrollHeight;
 }
@@ -1806,10 +2060,7 @@ const bootInt = setInterval(() => {
 
 document.getElementById('hh-session').textContent = Math.random().toString(36).slice(2,8).toUpperCase();
 
-setInterval(() => {
-  const TICKS = ['HEARTBEAT · OK','VECTOR SYNC · +12','MOOD DELTA · ±0.02','ORBIT SAMPLE · OK','MEM SWEEP · IDLE','CONTEXT · 4.2k / 128k'];
-  addLog(TICKS[Math.floor(Math.random()*TICKS.length)]);
-}, 8000);
+// Real events flow via ipcRenderer.on('syslog') — no fake ticks
 
 // ── Settings wiring ──────────────────────────────────────────────────────
 document.getElementById('st-hud').addEventListener('change', e => {
@@ -1826,6 +2077,18 @@ document.getElementById('st-glow').addEventListener('change', e => {
 });
 document.getElementById('st-fog').addEventListener('input', e => {
   scene.fog.density = (parseInt(e.target.value) / 10) * 0.044;
+});
+
+// Model selector — persisted in config llm.model
+const stModel = document.getElementById('st-model');
+ipcRenderer.invoke('get-config').then(cfg => {
+  const saved = cfg?.llm?.model;
+  if (saved) stModel.value = saved;
+});
+stModel.addEventListener('change', e => {
+  const model = e.target.value;
+  const provider = model === 'nyxia-ft' ? 'local' : 'anthropic';
+  ipcRenderer.invoke('patch-config', { llm: { model, provider } });
 });
 
 // Signal module ready to IPC block (for history replay)

@@ -120,13 +120,34 @@ module.exports = function initSystemPanel(deps) {
       const sm = await ipcRenderer.invoke('get-self-model');
       const smEl = document.getElementById('sys-selfmodel-content');
       if (sm && (sm.what_im_doing || sm.how_im_feeling)) {
-        smEl.innerHTML = [
-          sm.what_im_doing       && `<div><span style="color:rgba(120,100,180,0.7)">doing</span>  ${sm.what_im_doing}</div>`,
-          sm.how_im_feeling      && `<div><span style="color:rgba(120,100,180,0.7)">feeling</span>  ${sm.how_im_feeling}</div>`,
-          sm.what_i_want_right_now && `<div><span style="color:rgba(120,100,180,0.7)">wanting</span>  ${sm.what_i_want_right_now}</div>`,
-          sm.pending_concern     && `<div><span style="color:rgba(120,100,180,0.7)">concern</span>  ${sm.pending_concern}</div>`,
-          sm.inner_tension !== undefined && `<div style="margin-top:4px"><span style="color:rgba(120,100,180,0.7)">tension</span>  <span style="color:${sm.inner_tension > 0.6 ? '#ef4444' : sm.inner_tension > 0.3 ? '#f59e0b' : '#4ade80'}">${(sm.inner_tension * 100).toFixed(0)}%</span></div>`,
-        ].filter(Boolean).join('');
+        smEl.innerHTML = '';
+        const rows = [
+          ['doing',   sm.what_im_doing],
+          ['feeling', sm.how_im_feeling],
+          ['wanting', sm.what_i_want_right_now],
+          ['concern', sm.pending_concern],
+        ];
+        for (const [label, val] of rows) {
+          if (!val) continue;
+          const d = document.createElement('div');
+          const lbl = document.createElement('span');
+          lbl.style.cssText = 'color:rgba(120,100,180,0.7)';
+          lbl.textContent = label;
+          d.appendChild(lbl);
+          d.appendChild(document.createTextNode('  ' + val));
+          smEl.appendChild(d);
+        }
+        if (sm.inner_tension !== undefined) {
+          const d = document.createElement('div');
+          d.style.marginTop = '4px';
+          const lbl = document.createElement('span');
+          lbl.style.cssText = 'color:rgba(120,100,180,0.7)';
+          lbl.textContent = 'tension';
+          const val = document.createElement('span');
+          val.style.color = sm.inner_tension > 0.6 ? '#ef4444' : sm.inner_tension > 0.3 ? '#f59e0b' : '#4ade80';
+          val.textContent = '  ' + (sm.inner_tension * 100).toFixed(0) + '%';
+          d.appendChild(lbl); d.appendChild(val); smEl.appendChild(d);
+        }
       } else {
         smEl.innerHTML = '<span style="color:rgba(120,100,180,0.4);font-style:italic">not yet updated — check back in 2min</span>';
       }
@@ -137,16 +158,24 @@ module.exports = function initSystemPanel(deps) {
       const thoughts = await ipcRenderer.invoke('get-thought-bank');
       const tEl = document.getElementById('sys-thoughts-list');
       if (thoughts && thoughts.length > 0) {
-        tEl.innerHTML = thoughts.slice(-5).reverse().map(t => {
+        tEl.innerHTML = '';
+        for (const t of thoughts.slice(-5).reverse()) {
           const ago = Math.round((Date.now() - t.timestamp) / 60000);
-          const dot = t.spoken
-            ? '<span style="color:#4ade80;margin-right:5px">●</span>'
-            : '<span style="color:rgba(180,160,220,0.4);margin-right:5px">○</span>';
-          return `<div style="margin-bottom:5px;padding:4px 0;border-bottom:1px solid rgba(120,100,180,0.1)">
-            ${dot}<span style="color:rgba(120,100,180,0.5);font-size:9px">${ago}m ago · ${t.source}</span>
-            <div style="color:rgba(200,180,240,0.85);margin-top:2px">${t.text.slice(0, 80)}${t.text.length > 80 ? '…' : ''}</div>
-          </div>`;
-        }).join('');
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'margin-bottom:5px;padding:4px 0;border-bottom:1px solid rgba(120,100,180,0.1)';
+          const dot = document.createElement('span');
+          dot.style.cssText = t.spoken ? 'color:#4ade80;margin-right:5px' : 'color:rgba(180,160,220,0.4);margin-right:5px';
+          dot.textContent = '●';
+          const meta = document.createElement('span');
+          meta.style.cssText = 'color:rgba(120,100,180,0.5);font-size:9px';
+          meta.textContent = `${ago}m ago · ${t.source}`;
+          const body = document.createElement('div');
+          body.style.cssText = 'color:rgba(200,180,240,0.85);margin-top:2px';
+          const txt = String(t.text || '');
+          body.textContent = txt.slice(0, 80) + (txt.length > 80 ? '…' : '');
+          wrap.appendChild(dot); wrap.appendChild(meta); wrap.appendChild(body);
+          tEl.appendChild(wrap);
+        }
       } else {
         tEl.innerHTML = '<span style="color:rgba(120,100,180,0.4);font-style:italic">no thoughts yet — starts 3min after launch</span>';
       }
@@ -173,15 +202,47 @@ module.exports = function initSystemPanel(deps) {
     try {
       const k = await ipcRenderer.invoke('get-kristian-state');
       const el = document.getElementById('sys-kristian-content');
+      el.innerHTML = '';
       const energyColor = k.energy > 0.6 ? '#4ade80' : k.energy < 0.3 ? '#ef4444' : '#f59e0b';
-      el.innerHTML = [
-        `<div><span style="color:rgba(120,100,180,0.7)">mood</span>  ${k.mood}</div>`,
-        `<div><span style="color:rgba(120,100,180,0.7)">energy</span>  <span style="color:${energyColor}">${Math.round(k.energy * 100)}%</span></div>`,
-        k.focus && `<div><span style="color:rgba(120,100,180,0.7)">focus</span>  ${k.focus}</div>`,
-        k.wants && `<div><span style="color:rgba(120,100,180,0.7)">wants</span>  ${k.wants}</div>`,
-        k.tension > 0.2 && `<div><span style="color:rgba(120,100,180,0.7)">tension</span>  <span style="color:#ef4444">${Math.round(k.tension * 100)}%</span></div>`,
-        k.persistent?.tendencies?.length && `<div style="margin-top:4px;color:rgba(120,100,180,0.5)">tends to: ${k.persistent.tendencies.slice(0, 2).join(', ')}</div>`,
-      ].filter(Boolean).join('');
+      const kRows = [
+        ['mood',   k.mood],
+        ['focus',  k.focus],
+        ['wants',  k.wants],
+      ];
+      for (const [label, val] of kRows) {
+        if (!val) continue;
+        const d = document.createElement('div');
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'color:rgba(120,100,180,0.7)';
+        lbl.textContent = label;
+        d.appendChild(lbl);
+        d.appendChild(document.createTextNode('  ' + val));
+        el.appendChild(d);
+      }
+      const eDiv = document.createElement('div');
+      const eLbl = document.createElement('span');
+      eLbl.style.cssText = 'color:rgba(120,100,180,0.7)';
+      eLbl.textContent = 'energy';
+      const eVal = document.createElement('span');
+      eVal.style.color = energyColor;
+      eVal.textContent = '  ' + Math.round(k.energy * 100) + '%';
+      eDiv.appendChild(eLbl); eDiv.appendChild(eVal); el.appendChild(eDiv);
+      if (k.tension > 0.2) {
+        const tDiv = document.createElement('div');
+        const tLbl = document.createElement('span');
+        tLbl.style.cssText = 'color:rgba(120,100,180,0.7)';
+        tLbl.textContent = 'tension';
+        const tVal = document.createElement('span');
+        tVal.style.color = '#ef4444';
+        tVal.textContent = '  ' + Math.round(k.tension * 100) + '%';
+        tDiv.appendChild(tLbl); tDiv.appendChild(tVal); el.appendChild(tDiv);
+      }
+      if (k.persistent?.tendencies?.length) {
+        const tdDiv = document.createElement('div');
+        tdDiv.style.cssText = 'margin-top:4px;color:rgba(120,100,180,0.5)';
+        tdDiv.textContent = 'tends to: ' + k.persistent.tendencies.slice(0, 2).join(', ');
+        el.appendChild(tdDiv);
+      }
     } catch(_) {}
 
     // ✦ CURIOSITY GAPS — open gaps
@@ -189,19 +250,38 @@ module.exports = function initSystemPanel(deps) {
       const gaps = await ipcRenderer.invoke('get-gaps');
       const el = document.getElementById('sys-gaps-list');
       if (gaps && gaps.length > 0) {
-        el.innerHTML = gaps.slice(0, 8).map(g => {
+        el.innerHTML = '';
+        for (const g of gaps.slice(0, 8)) {
           const age = Math.round((Date.now() - g.created) / 3600000);
           const ageStr = age < 1 ? 'just now' : age < 24 ? `${age}h ago` : `${Math.round(age / 24)}d ago`;
           const urgColor = g.urgency > 0.6 ? '#ef4444' : g.urgency > 0.4 ? '#f59e0b' : 'rgba(180,160,220,0.4)';
-          return `<div style="margin-bottom:6px;padding:4px 0;border-bottom:1px solid rgba(120,100,180,0.1);display:flex;align-items:flex-start;gap:6px">
-            <span style="color:${urgColor};font-size:8px;margin-top:2px">●</span>
-            <div style="flex:1">
-              <div style="color:rgba(200,180,240,0.85)">${g.text.slice(0, 70)}${g.text.length > 70 ? '…' : ''}</div>
-              <div style="color:rgba(120,100,180,0.5);font-size:9px">${g.type} · ${ageStr}</div>
-            </div>
-            <button onclick="resolveGap(${g.id})" style="background:none;border:1px solid rgba(120,100,180,0.3);border-radius:3px;color:rgba(120,100,180,0.6);font-size:8px;padding:1px 4px;cursor:pointer;flex-shrink:0">✓</button>
-          </div>`;
-        }).join('');
+
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'margin-bottom:6px;padding:4px 0;border-bottom:1px solid rgba(120,100,180,0.1);display:flex;align-items:flex-start;gap:6px';
+
+          const dot = document.createElement('span');
+          dot.style.cssText = `color:${urgColor};font-size:8px;margin-top:2px`;
+          dot.textContent = '●';
+
+          const inner = document.createElement('div');
+          inner.style.flex = '1';
+          const textDiv = document.createElement('div');
+          textDiv.style.color = 'rgba(200,180,240,0.85)';
+          const txt = String(g.text || '');
+          textDiv.textContent = txt.slice(0, 70) + (txt.length > 70 ? '…' : '');
+          const metaDiv = document.createElement('div');
+          metaDiv.style.cssText = 'color:rgba(120,100,180,0.5);font-size:9px';
+          metaDiv.textContent = `${g.type} · ${ageStr}`;
+          inner.appendChild(textDiv); inner.appendChild(metaDiv);
+
+          const btn = document.createElement('button');
+          btn.style.cssText = 'background:none;border:1px solid rgba(120,100,180,0.3);border-radius:3px;color:rgba(120,100,180,0.6);font-size:8px;padding:1px 4px;cursor:pointer;flex-shrink:0';
+          btn.textContent = '✓';
+          btn.addEventListener('click', () => resolveGap(g.id));
+
+          wrap.appendChild(dot); wrap.appendChild(inner); wrap.appendChild(btn);
+          el.appendChild(wrap);
+        }
       } else {
         el.innerHTML = '<span style="color:rgba(120,100,180,0.4);font-style:italic">no open gaps</span>';
       }

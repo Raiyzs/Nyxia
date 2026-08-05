@@ -29,6 +29,16 @@ async function embed(text) {
   return Array.from(out.data);
 }
 
+// Add a row to the reflections table, creating it on first write
+async function _addRow(row) {
+  let table = await getTable();
+  if (table) { await table.add([row]); return; }
+  fs.mkdirSync(DB_PATH, { recursive: true });
+  const lancedb = require('vectordb');
+  const db      = await lancedb.connect(DB_PATH);
+  _table        = await db.createTable(TABLE, [row]);
+}
+
 async function getTable() {
   if (_table) return _table;
   try {
@@ -54,16 +64,7 @@ async function writeReflection(text, callOllama = null) {
     const vector = await embed(text);
     const date   = new Date().toISOString();
     const row    = { vector, text, type: 'reflection', date };
-    let table    = await getTable();
-    if (table) {
-      await table.add([row]);
-    } else {
-      // First write — create table
-      fs.mkdirSync(DB_PATH, { recursive: true });
-      const lancedb = require('vectordb');
-      const db      = await lancedb.connect(DB_PATH);
-      _table        = await db.createTable(TABLE, [row]);
-    }
+    await _addRow(row);
     // Sync to KRIX-BRAIN unified memory (fire and forget)
     krixMemory.writeEntry('nyxia/memories', 'reflection', text).catch(() => {});
     // Sync node to Kùzu graph (fire and forget)
@@ -110,15 +111,7 @@ async function writeFeedback(query, response, correction) {
     const date   = new Date().toISOString();
     const vector = await embed(text);
     const row    = { vector, text, type: 'correction', date };
-    let table    = await getTable();
-    if (table) {
-      await table.add([row]);
-    } else {
-      fs.mkdirSync(DB_PATH, { recursive: true });
-      const lancedb = require('vectordb');
-      const db      = await lancedb.connect(DB_PATH);
-      _table        = await db.createTable(TABLE, [row]);
-    }
+    await _addRow(row);
     krixMemory.writeEntry('nyxia/memories', 'correction', text).catch(() => {});
     graphMemory.writeNode(text, 'correction', date).catch(() => {});
     console.log('[lance-memory] feedback saved:', text.slice(0, 80));
@@ -155,15 +148,7 @@ async function writeAnchor(text) {
     const vector = await embed(text);
     const date   = new Date().toISOString();
     const row    = { vector, text, type: 'anchor', date };
-    let table    = await getTable();
-    if (table) {
-      await table.add([row]);
-    } else {
-      fs.mkdirSync(DB_PATH, { recursive: true });
-      const lancedb = require('vectordb');
-      const db      = await lancedb.connect(DB_PATH);
-      _table        = await db.createTable(TABLE, [row]);
-    }
+    await _addRow(row);
     krixMemory.writeEntry('nyxia/memories', 'anchor', text).catch(() => {});
     console.log('[lance-memory] anchor saved:', text.slice(0, 60));
   } catch (e) {
@@ -180,9 +165,12 @@ async function queryAnchors(limit = 3) {
   try {
     const table = await getTable();
     if (!table) return [];
-    // Use a vector query with a neutral embedding, then filter by type
-    const vector  = await embed('significant moment conversation anchor');
-    const results = await table.search(vector).limit(limit * 4).execute();
+    // Filter by type in LanceDB — JS-side filtering alone misses anchors
+    // when the top-k neighbors are all reflections
+    const vector = await embed('significant moment conversation anchor');
+    let q = table.search(vector);
+    if (typeof q.where === 'function') q = q.where(`type = 'anchor'`);
+    const results = await q.limit(limit * 4).execute();
     return results
       .filter(r => r.type === 'anchor')
       .sort((a, b) => new Date(b.date) - new Date(a.date))
@@ -204,18 +192,124 @@ async function writeOpinion(text) {
     const vector = await embed(text);
     const date   = new Date().toISOString();
     const row    = { vector, text, type: 'opinion', date };
-    let table    = await getTable();
-    if (table) {
-      await table.add([row]);
-    } else {
-      fs.mkdirSync(DB_PATH, { recursive: true });
-      const lancedb = require('vectordb');
-      const db      = await lancedb.connect(DB_PATH);
-      _table        = await db.createTable(TABLE, [row]);
-    }
+    await _addRow(row);
   } catch (e) {
     console.error('[lance-memory] writeOpinion error:', e.message);
   }
 }
 
-module.exports = { writeReflection, queryRelevant, writeFeedback, purgeBySnippets, writeAnchor, queryAnchors, writeOpinion };
+// ── Procedural Memory ────────────────────────────────────────────────────────
+// Stores "how I solved X" patterns for future reference.
+
+const PROC_TABLE = 'procedures';
+let _procTable = null;
+
+async function _getProcTable() {
+  if (_procTable) return _procTable;
+  try {
+    const lancedb = require('vectordb');
+    const db      = await lancedb.connect(DB_PATH);
+    const names   = await db.tableNames();
+    if (names.includes(PROC_TABLE)) {
+      _procTable = await db.openTable(PROC_TABLE);
+    }
+    return _procTable;
+  } catch { return null; }
+}
+
+/**
+ * Store a solved procedure pattern.
+ * Called at the end of a successful agent-loop run.
+ * @param {{ task: string, approach: string, result: string, success: boolean, durationMs?: number }} opts
+ */
+async function writeProcedure({ task, approach, result, success, durationMs = 0 } = {}) {
+  if (!success) return; // only store successful approaches
+  const text   = `PROCEDURE: Task: ${task.slice(0, 200)} | Approach: ${approach.slice(0, 300)} | Result: ${result.slice(0, 200)}`;
+  const date   = new Date().toISOString();
+  const vector = await embed(text);
+  const row    = { vector, text, type: 'procedure', date, success: String(success), durationMs };
+  try {
+    let pt = await _getProcTable();
+    if (pt) {
+      await pt.add([row]);
+    } else {
+      const lancedb = require('vectordb');
+      const db      = await lancedb.connect(DB_PATH);
+      _procTable    = await db.createTable(PROC_TABLE, [row]);
+    }
+    console.log('[lance-memory] procedure saved:', task.slice(0, 60));
+  } catch (e) {
+    console.error('[lance-memory] writeProcedure error:', e.message);
+  }
+}
+
+/**
+ * Query relevant past procedures for a given task description.
+ * @param {string} taskDescription
+ * @param {number} limit
+ * @returns {Promise<string[]>}
+ */
+async function queryProcedures(taskDescription, limit = 3) {
+  try {
+    const pt = await _getProcTable();
+    if (!pt) return [];
+    const vector  = await embed(taskDescription);
+    const results = await pt.search(vector).limit(limit).execute();
+    return results.map(r => r.text);
+  } catch { return []; }
+}
+
+// ── Importance Scoring + Prune ────────────────────────────────────────────────
+
+const EMO_WORDS = ['sad', 'joy', 'anger', 'fear', 'love', 'miss', 'lost', 'hurt', 'proud', 'happy', 'excit', 'disappoint', 'surprise', 'wonder', 'grief', 'peace'];
+
+function _importanceScore({ text = '', date = '' } = {}) {
+  const ageDays     = date ? (Date.now() - new Date(date).getTime()) / 86400000 : 999;
+  const recency     = Math.exp(-0.025 * ageDays); // half-life ~28 days
+  const lc          = text.toLowerCase();
+  const emoScore    = Math.min(EMO_WORDS.filter(w => lc.includes(w)).length * 0.07, 0.28);
+  const lengthScore = Math.min(text.length / 800, 0.12); // longer = more content
+  return Math.min(recency * 0.6 + emoScore + lengthScore, 1.0);
+}
+
+/**
+ * Prune old, low-importance entries from the reflections table.
+ * Protects anchors, corrections, and opinions.
+ *
+ * @param {number} threshold  — entries below this score are deleted (default 0.15)
+ * @param {number} minAgeDays — only consider entries older than this (default 30)
+ * @returns {Promise<number>} — count of removed entries
+ */
+async function pruneOldLowImportance(threshold = 0.15, minAgeDays = 30) {
+  const table = await getTable();
+  if (!table) return 0;
+
+  const cutoff = new Date(Date.now() - minAgeDays * 86400000).toISOString();
+  let removed  = 0;
+  try {
+    const vector = await embed('memory reflection experience old past');
+    // Fetch a large batch of candidates (neutral vector gives broad coverage)
+    const rows = await table.search(vector).limit(300).execute();
+    const stale = rows.filter(r =>
+      r.date < cutoff &&
+      !['anchor', 'correction', 'opinion'].includes(r.type)
+    );
+    for (const entry of stale) {
+      if (_importanceScore(entry) < threshold) {
+        const snippet = entry.text.slice(0, 40).replace(/'/g, "''");
+        await table.delete(`text LIKE '${snippet}%'`).catch(() => {});
+        removed++;
+      }
+    }
+    if (removed > 0) console.log(`[lance-memory] pruned ${removed} old low-importance entries`);
+  } catch (e) {
+    console.error('[lance-memory] pruneOldLowImportance error:', e.message);
+  }
+  return removed;
+}
+
+module.exports = {
+  writeReflection, queryRelevant, writeFeedback, purgeBySnippets,
+  writeAnchor, queryAnchors, writeOpinion,
+  writeProcedure, queryProcedures, pruneOldLowImportance,
+};

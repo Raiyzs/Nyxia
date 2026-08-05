@@ -8,7 +8,8 @@
 {
   "imports": {
     "three": "../node_modules/three/build/three.module.js",
-    "three/addons/": "../node_modules/three/examples/jsm/"
+    "three/addons/": "../node_modules/three/examples/jsm/",
+    "@pixiv/three-vrm": "../node_modules/@pixiv/three-vrm/lib/three-vrm.module.js"
   }
 }
 </script>
@@ -140,7 +141,7 @@ const { analyzeEmotion, NyxiaAvatarController } = require('./avatar-brain');
 
 // Read GLB asynchronously so the UI doesn't freeze on large files
 const fs = require('fs');
-const modelFilePath = path.join(__dirname, '../3d avatar/2B+moddel.glb');
+const modelFilePath = path.join(__dirname, '../3d avatar/vrm_girl.vrm');
 const brainFilePath = path.join(__dirname, '../brain 3d/Nyxia-Brain.glb');
 window.modelBuffer = null;
 fs.readFile(modelFilePath, (err, _nodeBuf) => {
@@ -419,6 +420,8 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
     const { RenderPass }      = await import('three/addons/postprocessing/RenderPass.js');
     const { UnrealBloomPass } = await import('three/addons/postprocessing/UnrealBloomPass.js');
     const { ShaderPass }      = await import('three/addons/postprocessing/ShaderPass.js');
+    const { VRMLoaderPlugin, VRMUtils } = await import('@pixiv/three-vrm');
+    const { buildRestIdleClip } = require('./mixamo-vrm-retarget');
     loadEl.textContent = 'Three.js loaded, parsing model...';
 
     const canvas = document.getElementById('three-canvas');
@@ -609,6 +612,7 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
     draco.setDecoderPath(window.dracoPath);
     const loader = new GLTFLoader();
     loader.setDRACOLoader(draco);
+    loader.register((parser) => new VRMLoaderPlugin(parser));
 
     // Wait for async GLB read if not ready yet
     if (!window.modelBuffer) {
@@ -618,7 +622,15 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
     loadEl.textContent = 'Parsing model...';
 
     loader.parse(window.modelBuffer, '', (gltf) => {
-      model = gltf.scene;
+      const vrm = gltf.userData.vrm;
+      if (vrm) {
+        VRMUtils.removeUnnecessaryVertices(gltf.scene);
+        VRMUtils.combineSkeletons(gltf.scene);
+        // No rotateVRM0() — this scene's camera sits at +Z looking at the
+        // origin, which already matches VRM0's native +Z-forward convention.
+        window.nyxiaVRM = vrm;
+      }
+      model = vrm ? vrm.scene : gltf.scene;
 
       // ── Step 1: add model, compute all world matrices ─────────────────
       scene.add(model);
@@ -737,6 +749,11 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
       });
       if (headBone) console.log(`[track] head bone: ${headBone.name}`);
       if (neckBone) console.log(`[track] neck bone: ${neckBone.name}`);
+
+      // vrm_girl.vrm ships zero baked animation clips, so without this she sits
+      // frozen in bind T-pose forever — synthesize a rest pose from pure vector
+      // math (arms hanging naturally) instead of needing a Mixamo source file.
+      if (vrm) gltf.animations.push(buildRestIdleClip(THREE, vrm));
 
       mixer = new THREE.AnimationMixer(model);
       // Play all clips simultaneously at weight 0 to prime the mixer,
@@ -981,6 +998,7 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
       const delta = clock.getDelta();
       t += delta;
       if (mixer) mixer.update(delta);
+      if (window.nyxiaVRM) window.nyxiaVRM.update(delta);
 
       const state = window.nyxiaState || 'idle';
       const lean  = window.nyxiaLean  || 'none';
@@ -1002,7 +1020,9 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
         model.rotation.z = floatZ;
         const targetY = lean === 'left' ? -0.22 : lean === 'right' ? 0.22 : 0;
         leanRotY += (targetY - leanRotY) * 0.05;
-        model.rotation.y = leanRotY + (window.modelRotOffset || 0);
+        // This rig's front faces away from this scene's camera (+Z, looking
+        // at the origin) at rotation 0 — confirmed by screenshot. Flip it.
+        model.rotation.y = leanRotY + (window.modelRotOffset || 0) + (window.nyxiaVRM ? Math.PI : 0);
 
         // ── Head/neck mouse tracking (runs after mixer.update) ─────────
         // Neck takes 40% of the rotation, head 60% — looks organic.

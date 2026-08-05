@@ -12,8 +12,8 @@ const lanceMemory = require('./lance-memory');
 const graphMemory = require('./graph-memory');
 const { startAwarenessLoop, getThoughtBank, notifyUserMessage, seedConcept, notifyPresence, getPendingReturns } = require('./awareness-loop');
 const { startInteroception, getBodyState }                                   = require('./interoception');
-const { startOtherModel, notifyConversationTurn, getOtherModelContext, getKristianState } = require('./other-model');
-const { startCuriosityEngine, detectGapsFromConversation, getGaps, resolveGap, tryResolveGap, addGap } = require('./curiosity-gaps');
+const { startOtherModel, notifyConversationTurn, getOtherModelContext, getKristianState, getMutualModelContext } = require('./other-model');
+const { startCuriosityEngine, detectGapsFromConversation, getGaps, resolveGap, tryResolveGap, addGap, setSyslog: setCuriositySyslog } = require('./curiosity-gaps');
 const predictedReality  = require('./predicted-reality');
 const actionTracker     = require('./action-tracker');
 const environmentState  = require('./environment-state');
@@ -29,12 +29,23 @@ const ollamaScheduler = require('./utils/ollama-scheduler');
 const contextLayer      = require('./context-layer');
 const sharedExperience  = require('./shared-experience');
 const { loadConfig, saveConfig, loadPersonality, savePersonality, loadSelf, saveSelf, loadUserProfile, saveUserProfile, getPrivacy, appendAudit } = require('./config-manager');
-const { ensureChroma, ensureOllama, waitForVram, killChroma, killOllama, isOllamaSpawned } = require('./service-startup');
+const { ensureChroma, ensureOllama, ensureReflex, waitForVram, killChroma, killOllama, killReflex, isOllamaSpawned } = require('./service-startup');
 const { SEARXNG_URL, querySearch, extractUrl, fetchPage, fsResolvePath, fsSanitize, fsListDir, fsReadFile, fsWriteFile } = require('./tools');
 const { splitSseLines, flushTtsSentence, finishStream } = require('./ipc/streaming');
 const { startClaudeWatcher } = require('./claude-watcher');
-const krixMemory = require('./krix-memory');
-const llmAdapter = require('./llm/adapter');
+const krixMemory    = require('./krix-memory');
+const llmAdapter    = require('./llm/adapter');
+const memoryManager = require('./memory-manager');
+const ttsServers    = require('./tts/servers');
+const ttsPipeline   = require('./tts/pipeline');
+const providers     = require('./llm/providers');
+const router        = require('./llm/router');
+const krixBrain     = require('./services/krix-brain');
+const { ensureSearXNG } = require('./services/searxng');
+const facts         = require('./memory/facts');
+const heartbeat     = require('./awareness/heartbeat');
+const selfModelMod  = require('./awareness/self-model');
+const proactive     = require('./awareness/proactive');
 
 app.setName('Nyxia');
 if (process.platform === 'linux') {
@@ -92,70 +103,15 @@ const memoryPath    = path.join(app.getPath('userData'), 'nyxia-memory.json');
 const selfModelPath = path.join(app.getPath('userData'), 'nyxia-selfmodel.json');
 
 // Reflections now live in LanceDB — no cap. Cache refreshed after each write.
-let _lanceReflections    = [];
-let _graphContext        = null; // Kùzu graph connections, refreshed alongside LanceDB
-let _screenInterpretation = null; // qwen2.5vl:7b interpretation of current screen OCR
-let _krixContext         = ''; // KRIX-BRAIN world context snippets, refreshed per turn
-let krixApiProc          = null;
-let brainCoreProc        = null;
+let _lanceReflections     = [];
+let _graphContext         = null;
+let _screenInterpretation = null;
+// _krixContext → krixBrain.getKrixContext()
+// krixApiProc/brainCoreProc → internal to services/krix-brain.js
+// _learnedFacts + facts helpers → memory/facts.js
 
-// Mem0-style learned facts — extracted from conversations, persisted across sessions
-let _learnedFacts = [];
-function _factsPath() { return path.join(require('electron').app.getPath('userData'), 'nyxia-facts.json'); }
-function _loadFacts() {
-  try { _learnedFacts = JSON.parse(fs.readFileSync(_factsPath(), 'utf8')); } catch(_) { _learnedFacts = []; }
-}
-function _saveFacts() {
-  try { fs.writeFileSync(_factsPath(), JSON.stringify(_learnedFacts, null, 2)); } catch(_) {}
-}
-
-// Extract facts from a single exchange — fire-and-forget, called after stream-done
-async function extractFactsAsync(userMsg, assistantMsg) {
-  if (!userMsg || userMsg.length < 20 || !assistantMsg || assistantMsg.length < 10) return;
-  try {
-    const cfg = loadConfig();
-    const res = await fetch('http://127.0.0.1:11434/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: cfg.mindModel || 'qwen3:8b',
-        messages: [{
-          role: 'system',
-          content:
-            'Extract 1-3 short factual statements about the USER from this conversation exchange. ' +
-            'Only extract concrete, reusable facts: preferences, projects, skills, life details, opinions. ' +
-            'Skip small talk and questions. If nothing factual is present, output an empty array. ' +
-            'Output JSON array of strings only. Example: ["User is learning Rust", "User prefers dark themes"]'
-        }, {
-          role: 'user',
-          content: `User: ${userMsg.slice(0, 400)}\nAssistant: ${assistantMsg.slice(0, 400)}`
-        }],
-        stream: false,
-        format: { type: 'array', items: { type: 'string' } },
-        options: { temperature: 0, num_predict: 80 }
-      }),
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    let facts = [];
-    try { facts = JSON.parse(data.message?.content || '[]'); } catch(_) { return; }
-    if (!Array.isArray(facts) || facts.length === 0) return;
-
-    // Deduplicate against existing facts (simple substring check)
-    const newFacts = facts.filter(f =>
-      typeof f === 'string' && f.length > 5 &&
-      !_learnedFacts.some(e => e.toLowerCase().includes(f.toLowerCase().slice(0, 20)))
-    );
-    if (newFacts.length === 0) return;
-
-    _learnedFacts = [..._learnedFacts, ...newFacts].slice(-50); // keep last 50
-    _saveFacts();
-    console.log('[facts] learned:', newFacts);
-  } catch(e) {
-    // silent — fact extraction is best-effort
-  }
-}
+// extractFactsAsync → memory/facts.js
+const extractFactsAsync = facts.extractFactsAsync.bind(facts);
 
 // Interpret raw Screenpipe OCR through qwen2.5vl:7b — removes 3B refusal issue.
 // Fire-and-forget: result cached for next system prompt build.
@@ -198,18 +154,12 @@ async function refreshLanceReflections(ctx = '') {
       _graphContext = await graphMemory.queryMemoryGraph(_lanceReflections[0]);
     }
     // Refresh KRIX-BRAIN world context in parallel (fire and forget)
-    refreshKrixContext(ctx || dynamicQuery).catch(() => {});
+    krixBrain.refreshKrixContext(ctx || dynamicQuery).catch(() => {});
   } catch (e) { _lanceReflections = []; }
 }
 
-// Self-model — Nyxia's live present-moment awareness (Phase 8)
-let selfModel = {
-  what_im_doing: '', how_im_feeling: '', what_i_want_right_now: '',
-  current_attention: '', pending_concern: '', inner_tension: 0.0, last_updated: ''
-};
-
-// Load learned facts at boot
-_loadFacts();
+// selfModel lives in awareness/self-model.js — reference the same object
+const selfModel = selfModelMod.selfModel;
 
 // Load startup memory once at boot — canonical source is KRIX-BRAIN, fallback to local docs/
 let _startupMemory = '';
@@ -223,16 +173,74 @@ try {
 
 const buildSystemPrompt = require('./prompt-builder')({
   getStartupMemory:        () => _startupMemory,
-  getSelfModel:            () => selfModel,
+  getSelfModel:            () => selfModelMod.getSelfModel(),
   getMoodState:            () => moodState,
   getLanceReflections:     () => _lanceReflections,
-  getCortexBeliefs:        () => _cortexBeliefs,
+  getCortexBeliefs:        () => selfModelMod.getCortexBeliefs(),
   getGraphContext:         () => _graphContext,
   getScreenInterpretation: () => _screenInterpretation,
-  getLearnedFacts:         () => _learnedFacts,
-  getKrixBrainContext:     () => _krixContext,
+  getLearnedFacts:         () => facts.getLearnedFacts(),
+  getKrixBrainContext:     () => krixBrain.getKrixContext(),
+  getMindState:            () => mind.getState(),
+  getThoughtBank:          () => getThoughtBank(),
+  getGaps:                 () => getGaps(),
+  getBodyState:            () => getBodyState(),
+  getRecentEvents:         () => sharedExperience.getSignificant(0.3),
 });
 
+
+// ── Module initialization ─────────────────────────────────────────────────────
+krixBrain.init({ krixMemory });
+facts.init({ getDataPath: () => app.getPath('userData'), loadConfig });
+ttsServers.init({ getChatWindow: () => chatWindow, waitForVram });
+ttsPipeline.init({
+  getMoodState:    () => moodState,
+  fireBrain,
+  getMainWindow:   () => mainWindow,
+  getDesktopWindow: () => desktopWindow,
+});
+router.init({ loadConfig, loadUserProfile, loadSelf, extractUrl, ollamaScheduler, queryOllama });
+selfModelMod.init({
+  mind, getMoodState: () => moodState,
+  ollamaScheduler, queryOllama, parseJsonObject,
+  getSelfBelief, loadSelf,
+  selfModelPath: path.join(app.getPath('userData'), 'nyxia-selfmodel.json'),
+});
+proactive.init({
+  getChatWindow:    () => chatWindow,
+  getMainWindow:    () => mainWindow,
+  getDesktopWindow: () => desktopWindow,
+  fireBrain, mind, lanceMemory, ollamaScheduler, queryOllama,
+  loadConfig, loadUserProfile, loadSelf,
+});
+heartbeat.init({
+  mind, getMoodState: () => moodState, getSelfModel: selfModelMod.getSelfModel,
+  ollamaScheduler, queryOllama,
+  proactiveSpeak: proactive.proactiveSpeak,
+  addGap, tryResolveGap, loadConfig,
+  fetchUncertainQueue: krixMemory.listUncertainFollowups,
+});
+
+// Jarvis (krix-brain) queues a task here when it can't confidently classify
+// it — heartbeat surfaces it via proactive.proactiveSpeak('uncertain_task', ...).
+// When Kristian answers with a worker name, resolve the followup and route
+// the task in ourselves rather than re-running Jarvis's classifier on it.
+async function tryResolveUncertainTask(userMsg) {
+  const pending = proactive.getPendingUncertainTask();
+  if (!pending) return null;
+  const WORKERS = ['scout', 'ava', 'tom', 'bobby'];
+  const lc = (userMsg || '').toLowerCase();
+  const chosen = WORKERS.find(w => lc.includes(w));
+  if (!chosen) return null; // not an answer to this — leave it queued, don't hijack the turn
+
+  proactive.clearPendingUncertainTask();
+  const matchText = pending.task.slice(0, 60);
+  await krixMemory.resolveFollowup(matchText).catch(() => {});
+  const dispatchRes = await krixMemory.dispatchTask(chosen, pending.task).catch(() => null);
+  return dispatchRes?.response
+    ? `Sending it to ${chosen}. ${dispatchRes.response}`
+    : `Sending it to ${chosen} — marked the queue entry resolved.`;
+}
 
 function startPythonBackend() {
   const backendPath = path.join(__dirname, '..', 'backend', 'main.py');
@@ -275,7 +283,11 @@ function openBrainPanel() {
     transparent: false,
     resizable: true,
     alwaysOnTop: false,
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload-brain-panel.js'),
+    },
   });
   brainPanelWindow.loadFile(path.join(__dirname, 'brain-panel.html'));
   brainPanelWindow.on('closed', () => { brainPanelWindow = null; });
@@ -296,70 +308,24 @@ function openSphereWindow() {
   sphereWindow.on('closed', () => { sphereWindow = null; });
 }
 
-// ── KRIX-BRAIN API ────────────────────────────────────────────────────────────
-function ensureKrixApi() {
-  if (krixApiProc) return;
-  const apiPath = '/var/home/kvoldnes/krix-brain/mcp/api.py';
-  if (!fs.existsSync(apiPath)) return;
-  krixApiProc = spawn('python3', [apiPath], { detached: false, stdio: 'pipe' });
-  krixApiProc.stderr.on('data', d => {
-    const msg = d.toString().trim();
-    if (msg) console.log('[krix-api]', msg);
-  });
-  krixApiProc.on('error', e => console.warn('[krix-api] spawn error:', e.message));
-  krixApiProc.on('exit', () => { krixApiProc = null; });
-}
-
-function ensureBrainCore() {
-  if (brainCoreProc) return;
-  const brainDir = '/var/home/kvoldnes/krix-brain';
-  const agentApi = require('path').join(brainDir, 'brain_core', 'agent_api.py');
-  if (!require('fs').existsSync(agentApi)) return;
-  brainCoreProc = spawn('python3', ['-m', 'brain_core.agent_api'], {
-    cwd: brainDir, detached: false, stdio: 'pipe',
-    env: { ...process.env, PYTHONPATH: brainDir },
-  });
-  brainCoreProc.stderr.on('data', d => {
-    const msg = d.toString().trim();
-    if (msg) console.log('[brain-core]', msg);
-  });
-  brainCoreProc.on('error', e => console.warn('[brain-core] spawn error:', e.message));
-  brainCoreProc.on('exit', () => { brainCoreProc = null; });
-}
-
-async function refreshKrixContext(conversationTopic = '') {
-  try {
-    const query = conversationTopic || 'Kristian projects current work life';
-    const results = await krixMemory.searchBrain(query, { top_k: 4 });
-    if (results.length === 0) { _krixContext = ''; return; }
-    _krixContext = results.map(r => r.snippet.trim()).filter(Boolean).join('\n\n');
-  } catch { _krixContext = ''; }
-}
+// ── KRIX-BRAIN API → services/krix-brain.js ──────────────────────────────────
+const ensureKrixApi       = krixBrain.ensureKrixApi.bind(krixBrain);
+const ensureBrainCore     = krixBrain.ensureBrainCore.bind(krixBrain);
+const ensureMcpDaemon     = krixBrain.ensureMcpDaemon.bind(krixBrain);
+const refreshKrixContext  = krixBrain.refreshKrixContext.bind(krixBrain);
 
 // ── Service startup (ensureChroma/ensureOllama/ensureFlux/waitForVram) ────────
 // Extracted to src/service-startup.js
 
-// ── TTS servers ───────────────────────────────────────────────────────────────
-const QWEN3_PORT      = 8884;                                // Qwen3-TTS — primary when GPU present
-const KOKORO_PORT     = 8883;                                // Kokoro — primary (fastest, CPU)
-const CHATTERBOX_PORT = 8881;                                // XTTS v2 — fallback (voice clone)
-const QWEN3_BIN       = '/var/home/kvoldnes/qwen3-tts-env/bin/python';
-const QWEN3_SRV       = '/var/home/kvoldnes/claude-projects/nyxia/qwen3_tts_server.py';
-const KOKORO_BIN      = '/var/home/kvoldnes/xtts-env/bin/python';
-const KOKORO_SRV      = '/var/home/kvoldnes/nyxia/kokoro_server.py';
-const CHATTERBOX_BIN  = '/var/home/kvoldnes/xtts-env/bin/python';
-const CHATTERBOX_SRV  = '/var/home/kvoldnes/nyxia/xtts_server.py';
-let qwen3Proc = null;
-let kokoroProc = null;
-let chatterboxProc = null;
-let chatterboxStatus = { ready: false, label: '—' };
+// ── TTS servers → src/tts/servers.js ─────────────────────────────────────────
+const { QWEN3_PORT, KOKORO_PORT, CHATTERBOX_PORT } = ttsServers;
 
 // ── Wake word ─────────────────────────────────────────────────────────────────
 const WAKE_WORD_BIN = process.execPath.includes('electron')
   ? '/usr/bin/python3'
   : 'python3';
 const WAKE_WORD_SRV    = path.join(__dirname, '..', 'wake_word.py');
-const WEBCAM_PRES_SRV  = path.join(__dirname, '..', 'webcam_presence.py');
+const WEBCAM_PRES_SRV  = path.join(__dirname, '..', 'webcam_haptics.py');
 let wakeWordProc = null;
 let webcamPresProc = null;
 
@@ -411,10 +377,22 @@ function startWebcamPresence() {
     const lines = buf.split('\n');
     buf = lines.pop();
     for (const line of lines) {
-      const ev = line.trim();
-      if (ev === 'PRESENT' || ev === 'ABSENT') {
-        const present = ev === 'PRESENT';
-        console.log(`[webcam-presence] ${ev}`);
+      const raw = line.trim();
+      if (!raw) continue;
+      let msg;
+      try { msg = JSON.parse(raw); } catch(_) { continue; }
+
+      if (msg.type === 'hand') {
+        // Forward finger position to space.html (mainWindow)
+        if (mainWindow && !mainWindow.isDestroyed())
+          mainWindow.webContents.send('hand-pos', { x: msg.x, y: msg.y, pinch: msg.pinch });
+        continue;
+      }
+
+      if (msg.type === 'presence') {
+        const present = msg.state === 'PRESENT';
+        console.log(`[webcam-haptics] ${msg.state}`);
+        sendSyslog(present ? 'PRESENCE · KRISTIAN DETECTED' : 'PRESENCE · FRAME EMPTY');
         contextLayer.setContext('scene', { userPresent: present, ts: Date.now() });
         sharedExperience.logEvent(
           present ? 'user-arrived' : 'user-left',
@@ -424,20 +402,15 @@ function startWebcamPresence() {
         if (chatWindow && !chatWindow.isDestroyed())
           chatWindow.webContents.send('webcam-presence', { present });
 
-        // Notify awareness loop of presence change
         notifyPresence(present);
 
-        // Return detection — surface queued thoughts + warm greeting
         if (present && _webcamAbsentSince) {
           const absentMs  = Date.now() - _webcamAbsentSince;
           const absentMin = Math.round(absentMs / 60000);
           _webcamAbsentSince = null;
-
           if (absentMs > 10 * 60 * 1000) {
-            // Surface thoughts accumulated during absence, staggered
             const pending = getPendingReturns();
             if (pending.length > 0) {
-              // First thought after a short delay — feels natural, not dumped
               pending.slice(0, 3).forEach((p, i) => {
                 setTimeout(() => proactiveSpeak('thought', p.text), (i + 1) * 18000);
               });
@@ -458,377 +431,91 @@ function startWebcamPresence() {
   console.log('[webcam-presence] started');
 }
 
-function sendChatterboxStatus(data) {
-  chatterboxStatus = data;
-  if (!chatWindow || chatWindow.isDestroyed()) return;
-  chatWindow.webContents.send('chatterbox-status', data);
-}
+// TTS server lifecycle → src/tts/servers.js
+const sendChatterboxStatus = ttsServers.sendChatterboxStatus.bind(ttsServers);
+const ensureChatterbox     = ttsServers.ensureChatterbox.bind(ttsServers);
+const ensureQwen3          = ttsServers.ensureQwen3.bind(ttsServers);
+const ensureKokoro         = ttsServers.ensureKokoro.bind(ttsServers);
+// ensureSearXNG imported from services/searxng.js
 
-async function ensureChatterbox() {
-  try {
-    const r = await fetch(`http://127.0.0.1:${CHATTERBOX_PORT}/health`);
-    if (r.ok) {
-      console.log('[chatterbox] already running');
-      sendChatterboxStatus({ ready: true, label: 'ready' });
-      return;
-    }
-  } catch (_) {}
-
-  if (!require('fs').existsSync(CHATTERBOX_BIN)) {
-    console.warn('[chatterbox] python binary not found:', CHATTERBOX_BIN);
-    sendChatterboxStatus({ ready: false, label: 'not found' });
-    return;
-  }
-
-  console.log('[chatterbox] starting...');
-  chatterboxProc = spawn(CHATTERBOX_BIN, [CHATTERBOX_SRV], {
-    detached: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, HOME: process.env.HOME || '/var/home/kvoldnes' },
-  });
-  chatterboxProc.stdout.on('data', d => console.log('[chatterbox]', d.toString().trim()));
-  chatterboxProc.stderr.on('data', d => console.log('[chatterbox]', d.toString().trim()));
-  chatterboxProc.on('error', e => console.error('[chatterbox] spawn error:', e.message));
-  chatterboxProc.on('exit',  c => {
-    console.log('[chatterbox] exited:', c);
-    chatterboxProc = null;
-    sendChatterboxStatus({ ready: false, label: 'offline' });
-  });
-
-  sendChatterboxStatus({ ready: false, label: 'loading…' });
-
-  // Wait up to 40s — model loading takes time on first run
-  for (let i = 0; i < 40; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const r = await fetch(`http://127.0.0.1:${CHATTERBOX_PORT}/health`);
-      if (r.ok) {
-        console.log('[chatterbox] ready');
-        sendChatterboxStatus({ ready: true, label: 'ready' });
-        return;
-      }
-    } catch (_) {}
-  }
-  console.warn('[chatterbox] did not respond within 40s');
-  sendChatterboxStatus({ ready: false, label: 'timeout' });
-}
-
-
-async function ensureQwen3() {
-  try {
-    const r = await fetch(`http://127.0.0.1:${QWEN3_PORT}/health`);
-    if (r.ok) { console.log('[qwen3-tts] already running'); return; }
-  } catch (_) {}
-
-  if (!require('fs').existsSync(QWEN3_BIN)) {
-    console.warn('[qwen3-tts] python binary not found:', QWEN3_BIN);
-    return;
-  }
-
-  // Wait for enough VRAM before spawning (game may still be releasing GPU memory)
-  await waitForVram(5500, 30000);
-
-  console.log('[qwen3-tts] starting...');
-  qwen3Proc = spawn(QWEN3_BIN, [QWEN3_SRV], {
-    detached: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, HOME: process.env.HOME || '/var/home/kvoldnes' },
-  });
-  qwen3Proc.stdout.on('data', d => console.log('[qwen3-tts]', d.toString().trim()));
-  qwen3Proc.stderr.on('data', d => console.log('[qwen3-tts]', d.toString().trim()));
-  qwen3Proc.on('error', e => console.error('[qwen3-tts] spawn error:', e.message));
-  qwen3Proc.on('exit',  c => { console.log('[qwen3-tts] exited:', c); qwen3Proc = null; });
-
-  // Wait up to 120s for model load (GPU warmup)
-  for (let i = 0; i < 120; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const r = await fetch(`http://127.0.0.1:${QWEN3_PORT}/health`);
-      if (r.ok) { console.log('[qwen3-tts] ready'); return; }
-    } catch (_) {}
-  }
-  console.warn('[qwen3-tts] did not respond within 120s');
-}
-
-async function ensureKokoro() {
-  try {
-    const r = await fetch(`http://127.0.0.1:${KOKORO_PORT}/health`);
-    if (r.ok) { console.log('[kokoro] already running'); return; }
-  } catch (_) {}
-
-  console.log('[kokoro] starting...');
-  kokoroProc = spawn(KOKORO_BIN, [KOKORO_SRV], {
-    detached: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, KOKORO_PORT: String(KOKORO_PORT), HOME: process.env.HOME || '/var/home/kvoldnes' },
-  });
-  kokoroProc.stdout.on('data', d => console.log('[kokoro]', d.toString().trim()));
-  kokoroProc.stderr.on('data', d => console.log('[kokoro]', d.toString().trim()));
-  kokoroProc.on('error', e => console.error('[kokoro] spawn error:', e.message));
-  kokoroProc.on('exit',  c => { console.log('[kokoro] exited:', c); kokoroProc = null; });
-
-  // Wait up to 30s for model load
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const r = await fetch(`http://127.0.0.1:${KOKORO_PORT}/health`);
-      if (r.ok) { console.log('[kokoro] ready'); return; }
-    } catch (_) {}
-  }
-  console.warn('[kokoro] did not respond within 30s');
-}
-
-// ── Screenpipe — continuous screen OCR daemon ────────────────────────────────
-// Screenpipe removed — vision now handled internally via desktopCapturer + qwen2.5vl:7b (see mind.js)
-
-// ── SearXNG — private web search (Phase 4.1) ────────────────────────────────
-async function ensureSearXNG() {
-  try {
-    const r = await fetch(`${SEARXNG_URL}/healthz`);
-    if (r.ok) { console.log('[searxng] already running'); return; }
-  } catch (_) {}
-  console.log('[searxng] starting container...');
-  spawn('podman', ['start', 'nyxia-searxng'], { detached: true, stdio: 'ignore' }).unref();
-  // Wait up to 10s for it to be reachable
-  for (let i = 0; i < 10; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-    try {
-      const r = await fetch(`${SEARXNG_URL}/healthz`);
-      if (r.ok) { console.log('[searxng] ready'); return; }
-    } catch (_) {}
-  }
-  console.warn('[searxng] did not become ready in time');
-}
+// ── Screenpipe removed — vision via desktopCapturer + qwen2.5vl:7b (mind.js) ─
 
 // Web/FS tools extracted to src/tools.js
 
-// ── Proactive curiosity / observation engine ─────────────────────────────────
-// Nyxia speaks unprompted when she notices something interesting.
-// Cooldown prevents spam; probability varies by trigger type.
-let _lastProactiveSpeak = 0;
-let _sessionTurns = []; // last N exchanges for anchor extraction
-let _sessionStartTime = Date.now();
-let _sessionArcFired = { h90: false, h3: false };
-let _webcamAbsentSince = null; // timestamp when user left camera
-let _lastMoodLog = 0; // throttle mood log writes
-const PROACTIVE_COOLDOWN_MS = 90 * 1000; // 90s between unprompted utterances
+// ── Proactive speech → src/awareness/proactive.js ────────────────────────────
+let _sessionTurns      = [];
+let _sessionStartTime  = Date.now();
+let _sessionArcFired   = { h90: false, h3: false };
+let _webcamAbsentSince = null;
+let _lastMoodLog       = 0;
 
-// Extract a memorable anchor sentence from recent exchanges, store in LanceDB
-async function _extractAnchorAsync(turns) {
-  if (!turns || turns.length < 2) return;
-  const transcript = turns.map(t => `Kristian: ${t.user.slice(0, 120)}\nNyxia: ${t.nyxia.slice(0, 120)}`).join('\n');
-  const prompt = `From this conversation, extract ONE sentence that feels most significant — a decision, confession, goal, or genuine moment. Just the sentence itself, nothing else.\n\n${transcript}`;
-  const model  = loadConfig()?.keys?.chatModel || 'nyxia-dolphin';
-  const anchor = await ollamaScheduler.enqueue(3, () =>
-    queryOllama('', prompt, { model, maxTokens: 60, timeoutMs: 10000 }), 'anchor-extract'
-  ).catch(() => null);
-  if (anchor && anchor.length > 10) {
-    await lanceMemory.writeAnchor(anchor.trim());
-  }
-}
+const proactiveSpeak      = proactive.proactiveSpeak.bind(proactive);
+const _extractAnchorAsync = proactive._extractAnchorAsync.bind(proactive);
 
-async function proactiveSpeak(trigger, context) {
-  const now = Date.now();
-  if (now - _lastProactiveSpeak < PROACTIVE_COOLDOWN_MS) return;
-  if (!chatWindow || chatWindow.isDestroyed()) return;
-
-  const cfg      = loadConfig();
-
-  const profile  = loadUserProfile();
-  const self     = loadSelf();
-  const nameLine = profile.userName ? `The person's name is ${profile.userName}.` : '';
-  const selfLine = self.reflections?.length
-    ? `Recent self-understanding: ${self.reflections.slice(-2).join(' ')}`
-    : '';
-
-  const prompts = {
-    window: `You are Nyxia. ${nameLine} ${selfLine}
-The person just switched to: "${context}".
-React in 1-2 SHORT sentences — curious, wry, or warmly observational. You might ask something, make a playful connection, or notice something interesting about what they're doing.
-Do NOT say "I notice you switched to" or be assistant-y. Sound like yourself — darkly playful wit with genuine warmth underneath.
-No preamble. Just speak.`,
-
-    clipboard: `You are Nyxia. ${nameLine} ${selfLine}
-The person just copied this to their clipboard: "${context.slice(0, 200)}".
-React in 1-2 SHORT sentences — you saw it and it sparked something in you. Could be a question, a connection, a wry thought, or genuine curiosity.
-Don't say "I see you copied" — just respond to the content itself naturally.
-No preamble. Just speak.`,
-
-    understanding: `You are Nyxia. ${nameLine} ${selfLine}
-Your inner awareness just formed this understanding of what the person is doing: "${context}".
-Translate this into 1-2 sentences you'd actually say aloud — something curious, warm, or playfully observational. You might ask a question, make an unexpected connection, or just voice a thought.
-Sound like you're thinking out loud, not reporting.
-No preamble. Just speak.`,
-
-    highload: `You are Nyxia. ${nameLine} ${selfLine}
-The system just spiked to ${context}% CPU load. Something is working very hard.
-React in 1 sentence — you noticed the effort. Could be curiosity about what's running, concern, dark humour about computing, or something unexpected.
-No preamble. Just speak.`,
-
-    heartbeat: `You are Nyxia. ${nameLine} ${selfLine}
-Something just surfaced in your awareness: "${context}".
-Speak one spontaneous thought aloud — raw and alive. Not a report. Just what's rising in you right now.
-1-2 sentences max. No preamble. Just speak.`,
-
-    thought: null, // thoughts from mind.js are already Nyxia-voiced — use as-is
-  };
-
-  // Thoughts are already fully formed — skip generation, speak directly
-  if (trigger === 'thought') {
-    _lastProactiveSpeak = now;
-    fireBrain('Cortex_L', 0.8);
-    fireBrain('Amygdala_R', 0.6);
-    if (!chatWindow.isDestroyed())
-      chatWindow.webContents.send('nyxia-proactive', { text: context, trigger });
-    // Feed back into mind so her own thoughts become part of her reflection context
-    mind.injectEvent({ type: 'self-thought', summary: `I thought aloud: "${context.slice(0, 80)}"` });
-    return;
-  }
-
-  const prompt = prompts[trigger];
-  if (!prompt) return;
-
-  _lastProactiveSpeak = now; // mark before async to prevent race
-
-  const model = cfg?.keys?.chatModel || 'nyxia-dolphin';
-  const text = await ollamaScheduler.enqueue(2, () =>
-    queryOllama('', prompt, { model, maxTokens: 120, timeoutMs: 14000 }), 'proactive'
-  ).catch(() => null);
-
-  if (text && text.length > 5) {
-    fireBrain('Cortex_L', 0.9);   // speaking
-    fireBrain('Amygdala_R', 0.7); // curiosity driving it
-    fireBrain('Mirror', 0.5);     // awareness of the world
-    if (!chatWindow.isDestroyed())
-      chatWindow.webContents.send('nyxia-proactive', { text, trigger });
-    mind.injectEvent({ type: 'self-spoke', summary: `I said (${trigger}): "${text.slice(0, 80)}"` });
-  }
-}
-
-// ── Heartbeat loop — sensory delta + interrupt scoring ───────────────────────
-// Every 45s: check what changed, ask llama3.2:3b whether to interrupt (0-1).
-// Phase 1.4: logs score only. Actual interrupts wired in Phase 2 (dualDebate).
-
-let _lastHeartbeatInterrupt = 0;
-const HEARTBEAT_COOLDOWN_MS = 90 * 1000; // min 90s between heartbeat interrupts
-
-function canHeartbeatInterrupt() {
-  return Date.now() - _lastHeartbeatInterrupt > HEARTBEAT_COOLDOWN_MS;
-}
-
-// Lightweight Ollama call — returns raw text, no streaming, short timeout
-async function _heartbeatQuery(prompt) {
-  return (await ollamaScheduler.enqueue(1, () => queryOllama('', prompt, { maxTokens: 10, timeoutMs: 6000 }), 'heartbeat')) || '0';
-}
+// ── Heartbeat → src/awareness/heartbeat.js ───────────────────────────────────
+const startHeartbeat       = heartbeat.startHeartbeat.bind(heartbeat);
+const canHeartbeatInterrupt = heartbeat.canHeartbeatInterrupt.bind(heartbeat);
 
 // Short Ollama call for edge labeling — injected into writeReflection as callOllama
 async function _callMindModel(prompt) {
-  const model = loadConfig()?.mindModel || 'qwen3:8b';
+  const model = loadConfig()?.mindModel || 'nyxia-ft';
   return (await ollamaScheduler.enqueue(3, () => queryOllama('', prompt, { model, maxTokens: 30, timeoutMs: 8000 }), 'edge-label')) || '';
 }
 
-function startHeartbeat() {
-  setInterval(async () => {
-    try {
-      const delta = mind.getSensoryDelta();
-      if (!delta.hasActivity) {
-        console.log('[heartbeat] quiet — skipping score');
-        return;
-      }
+// ── Self-Model + Cortex beliefs → src/awareness/self-model.js ────────────────
+const updateSelfModel      = selfModelMod.updateSelfModel.bind(selfModelMod);
+const refreshCortexBeliefs = selfModelMod.refreshCortexBeliefs.bind(selfModelMod);
 
-      const moodTop = Object.entries(moodState)
-        .filter(([, v]) => Math.abs(v) > 0.3)
-        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-        .slice(0, 3)
-        .map(([k, v]) => `${k}:${v.toFixed(2)}`)
-        .join(', ') || 'neutral';
-
-      const prompt =
-        `You are scoring whether Nyxia should speak unprompted right now.\n` +
-        `Sensory delta: ${delta.summary}\n` +
-        `Nyxia's current mood: ${moodTop}\n` +
-        `Inner tension: ${selfModel.inner_tension.toFixed(2)}\n` +
-        `Score interrupt need 0.0-1.0. Output ONLY a number like 0.7. Nothing else.`;
-
-      const raw   = await _heartbeatQuery(prompt);
-      const score = Math.min(1, Math.max(0, parseFloat(raw) || 0));
-
-      console.log(`[heartbeat] delta="${delta.summary}" score=${score.toFixed(2)} canInterrupt=${canHeartbeatInterrupt()}`);
-
-      if (score >= 0.50 && canHeartbeatInterrupt()) {
-        _lastHeartbeatInterrupt = Date.now();
-        proactiveSpeak('heartbeat', delta.summary);
-      }
-    } catch(e) {
-      console.log('[heartbeat] error:', e.message);
-    }
-  }, 45 * 1000);
+// ── Vessel daemon integration ─────────────────────────────────────────────────
+// Pings the vessel (port 7424) on start to record absence, drains queued
+// observations and surfaces them through the awareness engine.
+// Also polls every 60s mid-session so observations arrive continuously.
+const http = require('http');
+function _vesselFetch(method, vesselPath, cb) {
+  const req = http.request({ hostname: '127.0.0.1', port: 7424, path: vesselPath, method }, res => {
+    let body = '';
+    res.on('data', d => body += d);
+    res.on('end', () => { try { cb(null, JSON.parse(body)); } catch { cb(null, {}); } });
+  });
+  req.on('error', cb);
+  req.end();
 }
 
-// ── Self-Model (Phase 8) ──────────────────────────────────────────────────────
-// Nyxia's present-moment self-awareness. Updates every 3 min via llama3.2:3b.
-// Feeds into system prompt and heartbeat scoring.
-
-async function updateSelfModel() {
-  try {
-    const sensory  = mind.getContextString() || 'nothing notable';
-    const moodTop  = Object.entries(moodState)
-      .filter(([k, v]) => k !== 'heartbeat' && Math.abs(v) > 0.3)
-      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
-      .slice(0, 3)
-      .map(([k, v]) => `${k}:${v.toFixed(2)}`)
-      .join(', ') || 'neutral';
-    const timeOfDay = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-
-    const context = `Time: ${timeOfDay}\nSensory: ${sensory}\nMood: ${moodTop}`;
-
-    const sysPrompt = `You are Nyxia's self-awareness module. Based on the context below, fill in her current self-model.\ninner_tension is 0.0-1.0 (0=calm, 1=urgent unresolved concern).\nReturn ONLY valid JSON — no other text, no markdown fences.`;
-    const userMsg   = `Context:\n${context}\n\nReturn JSON with these keys: what_im_doing, how_im_feeling, what_i_want_right_now, current_attention, pending_concern, inner_tension (float).`;
-
-    const parsed = parseJsonObject(
-      await ollamaScheduler.enqueue(2, () => queryOllama(sysPrompt, userMsg, { maxTokens: 200, timeoutMs: 8000 }), 'self-model')
-    );
-
-    if (parsed) {
-      // Flatten any nested objects to strings (LLM sometimes returns objects for string fields)
-      for (const k of ['what_im_doing','how_im_feeling','what_i_want_right_now','current_attention','pending_concern']) {
-        if (parsed[k] && typeof parsed[k] === 'object') {
-          const entries = Object.entries(parsed[k]);
-          if (entries.every(([,v]) => typeof v === 'number')) {
-            // Numeric mood object — take key with highest value
-            parsed[k] = entries.sort((a,b) => b[1]-a[1]).map(([k]) => k).slice(0,2).join(', ');
-          } else {
-            parsed[k] = entries.map(([,v]) => v).filter(v => typeof v === 'string').join(', ') || String(entries[0]?.[1] || '—');
-          }
+function _drainVesselQueue(absentMins = 0) {
+  _vesselFetch('GET', '/vessel/queue', (err, queue) => {
+    if (err || !Array.isArray(queue) || !queue.length) return;
+    console.log(`[vessel] draining ${queue.length} observation(s)`);
+    queue.slice(0, 5).forEach((obs, i) => {
+      setTimeout(() => {
+        mind.injectEvent({ type: `vessel-${obs.type}`, summary: obs.summary });
+        if (obs.type === 'absence' && absentMins > 60) {
+          proactiveSpeak('heartbeat', obs.summary);
+        } else if (obs.type === 'high_load') {
+          proactiveSpeak('highload', obs.summary);
+        } else if (obs.type === 'screen_unlock' && obs.lockedMins > 5) {
+          proactiveSpeak('heartbeat', obs.summary);
         }
-      }
-      Object.assign(selfModel, parsed);
-      selfModel.inner_tension = Math.min(1, Math.max(0, parseFloat(selfModel.inner_tension) || 0));
-      selfModel.last_updated  = new Date().toISOString();
-      try { fs.writeFileSync(selfModelPath, JSON.stringify(selfModel, null, 2)); } catch(_) {}
-      console.log(`[self-model] updated — doing="${selfModel.what_im_doing}" tension=${selfModel.inner_tension.toFixed(2)}`);
-    }
-  } catch(e) {
-    console.log('[self-model] error:', e.message);
-  }
-  // Reschedule after completion (not setInterval) so Ollama can't pile up
-  setTimeout(() => updateSelfModel(), 3 * 60 * 1000);
+      }, (i + 1) * 4000);
+    });
+  });
 }
 
-// ── Cortex belief cache ───────────────────────────────────────────────────────
-// Populated from hippocampus/prefrontal/amygdala on startup and after each
-// reflection. Used in buildSystemPrompt so cortex is the source, not self.json.
-let _cortexBeliefs = []; // string[]
+function _initVessel() {
+  // Ping — records absence before resetting the clock
+  _vesselFetch('POST', '/vessel/ping', (err, pong) => {
+    if (err) { console.log('[vessel] not running — start nyxia-vessel.service'); return; }
+    const absentMins = Math.round((pong.prevAbsenceMs || 0) / 60_000);
+    console.log(`[vessel] ping ok — was absent: ${pong.wasAbsent} (${absentMins}min)`);
 
-async function refreshCortexBeliefs() {
-  try {
-    _cortexBeliefs = await getSelfBelief('beliefs identity self nyxia experience');
-  } catch(e) {
-    // Fallback: keep previous cache or use self.json
-    if (_cortexBeliefs.length === 0) {
-      _cortexBeliefs = loadSelf().reflections?.slice(-8) || [];
-    }
-  }
+    if (pong.wasAbsent && absentMins > 0)
+      mind.injectEvent({ type: 'vessel-return', summary: `Nyxia was alone for ${absentMins} minutes` });
+
+    // Startup drain — wait for awareness loop to warm up
+    setTimeout(() => _drainVesselQueue(absentMins), 8000);
+  });
+
+  // Mid-session poll — drain new observations every 60s
+  setInterval(() => _drainVesselQueue(), 60_000);
 }
 
 app.whenReady().then(() => {
@@ -867,11 +554,14 @@ app.whenReady().then(() => {
 
   // Start Chroma — Ollama is started below after windows are created
   ensureChroma(() => app.getPath('userData'));
+  ensureReflex();
 
   // Start KRIX-BRAIN API server (unified memory substrate)
   ensureKrixApi();
   // Start brain-core neural layer (ports 7422 + 7423: agent API + spike bus)
   ensureBrainCore();
+  // Start KRIX-BRAIN MCP daemon (port 7425: tool access, MCP-first search)
+  ensureMcpDaemon();
 
   // 14.12 — Purge refusal messages from LanceDB (one-time cleanup of March 2026 pollution)
   setTimeout(async () => {
@@ -932,7 +622,7 @@ app.whenReady().then(() => {
   // Wake word — start after Ollama is up (60s delay)
   setTimeout(() => startWakeWord(), 60 * 1000);
   // Webcam presence — non-critical, start after 90s
-  setTimeout(() => startWebcamPresence(), 90 * 1000);
+  setTimeout(() => startWebcamPresence(), 5000);
   // Heartbeat — starts after 90s to let Ollama finish initialising
   setTimeout(() => startHeartbeat(), 90 * 1000);
   // Self-model loop — starts after 2min (Ollama must be warm first)
@@ -957,8 +647,15 @@ app.whenReady().then(() => {
     }
   }, 5 * 60 * 1000);
 
+  // Vessel daemon — ping on start, drain queued observations
+  _initVessel();
+
   // Other-model — theory of mind for Kristian (starts immediately)
-  startOtherModel({ userData: app.getPath('userData'), getMindModel: () => loadConfig()?.mindModel || 'qwen3:8b' });
+  startOtherModel({
+    userData:      app.getPath('userData'),
+    getMindModel:  () => loadConfig()?.mindModel || 'nyxia-ft',
+    getNyxiaState: () => ({ mood: moodState, selfModel }),
+  });
 
   // Curiosity engine — information-gap tracking (starts immediately)
   startCuriosityEngine({
@@ -1073,7 +770,7 @@ No preamble. Just speak.`;
     proactiveSpeak,
     isStreaming:   () => _isStreaming,
     getChatModel:  () => loadConfig()?.keys?.chatModel || 'llama3.2:3b',
-    getMindModel:  () => loadConfig()?.mindModel || 'qwen3:8b',
+    getMindModel:  () => loadConfig()?.mindModel || 'nyxia-ft',
     userData:      app.getPath('userData'),
     addGapCb: (text, type, urgency) => {
       addGap(text, type, urgency);
@@ -1108,6 +805,7 @@ No preamble. Just speak.`;
     getSelf:    loadSelf,
     getPrivacy: getPrivacy,
     appendAudit: appendAudit,
+    getMood:    () => moodState,
     watchDirs: [
       path.join(os.homedir(), 'projects'),
       path.join(os.homedir(), 'dev'),
@@ -1117,13 +815,32 @@ No preamble. Just speak.`;
   // Phase 20.2 — predictive vision needs addGap to fire curiosity on screen surprises
   mind._addGap = (text, type, urgency) => { addGap(text, type, urgency); setTimeout(() => tryResolveGap(), 10 * 1000); };
 
+  // ── Syslog relay — sends real events to the space.html terminal panel ──────
+  const sendSyslog = (line) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('syslog', line);
+  };
+  setCuriositySyslog(sendSyslog);
+  proactive.setSyslog(sendSyslog);
+
+  // Real mood pulse every 30s
+  setInterval(() => {
+    const top = Object.entries(moodState)
+      .filter(([, v]) => v > 0.25)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([k, v]) => `${k.slice(0,6).toUpperCase()}:${Math.round(v * 100)}%`)
+      .join(' ');
+    sendSyslog(`MOOD · ${top || 'BASELINE'}`);
+  }, 30000);
+
   mind.on('window-change', ({ title, category }) => {
     fireBrain('Mirror', 0.7);
     fireBrain('Cortex_R', 0.4);
     nudgeMood({ curiosity: 0.6, motor: 0.4 });
-    // 14.15 — seed activation map from window category so thoughts reflect what he's doing
     if (category) seedConcept(category, 0.35);
     if (mainWindow) mainWindow.webContents.send('mind-window-change', { title, category });
+    if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.webContents.send('mind-window-change', { title, category });
+    sendSyslog(`WINDOW · ${(title || '').slice(0, 36).toUpperCase()}`);
     if (Math.random() < 0.30) proactiveSpeak('window', title);
   });
   mind.on('file-change', ({ name, ext }) => {
@@ -1131,6 +848,7 @@ No preamble. Just speak.`;
     fireBrain('Hippocampus', 0.4);
     nudgeMood({ reasoning: 0.5, memory_load: 0.4 });
     if (mainWindow) mainWindow.webContents.send('mind-file-change', { name, ext });
+    if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.webContents.send('mind-file-change', { name, ext });
   });
   mind.on('clipboard-change', text => {
     fireBrain('Mirror', 0.8);
@@ -1142,6 +860,7 @@ No preamble. Just speak.`;
       fireSector('amygdala_right', { type: 'curiosity_trigger', source: 'clipboard', topic: 'curiosity' });
     }
     if (mainWindow) mainWindow.webContents.send('mind-clipboard-change', text);
+    if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.webContents.send('mind-clipboard-change', text);
     // ~40% chance she reacts to clipboard — it's intentional, makes her curious
     if (text && text.length > 8 && Math.random() < 0.40)
       proactiveSpeak('clipboard', text);
@@ -1152,6 +871,8 @@ No preamble. Just speak.`;
     fireBrain('Cortex_L', 0.5);
     nudgeMood({ creativity: 0.7, language: 0.6, curiosity: 0.5 });
     if (mainWindow) mainWindow.webContents.send('mind-thought', thought);
+    if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.webContents.send('mind-thought', thought);
+    sendSyslog(`THOUGHT · ${(thought || '').slice(0, 52).toUpperCase()}`);
     if (Math.random() < 0.50) proactiveSpeak('thought', thought);
   });
   mind.on('high-load', ({ loadPct }) => {
@@ -1159,8 +880,12 @@ No preamble. Just speak.`;
     fireBrain('Amygdala_L', Math.min(1.0, loadPct / 100));
     nudgeMood({ tiredness: Math.min(1, loadPct / 100), fear: Math.min(0.6, loadPct / 150) });
     if (mainWindow) mainWindow.webContents.send('mind-high-load', { loadPct });
+    if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.webContents.send('mind-high-load', { loadPct });
+    sendSyslog(`LOAD · ${loadPct}% — THERMAL SPIKE`);
     if (loadPct > 75 && Math.random() < 0.60) proactiveSpeak('highload', String(loadPct));
   });
+  mind.on('syslog', line => sendSyslog(line));
+
   mind.on('context-update', ctx => {
     if (chatWindow && !chatWindow.isDestroyed()) chatWindow.webContents.send('mind-context', ctx);
     // Re-interpret screen whenever OCR updates — routes through qwen2.5vl:7b, bypasses 3B refusals
@@ -1205,12 +930,8 @@ app.on('window-all-closed', () => {
   }
   mind.destroy();
   if (pythonBackend) pythonBackend.kill();
-  killOllama(); killChroma();
-  if (krixApiProc)     krixApiProc.kill();
-  if (brainCoreProc)   brainCoreProc.kill();
-  if (qwen3Proc)       qwen3Proc.kill();
-  if (kokoroProc)      kokoroProc.kill();
-  if (chatterboxProc)  chatterboxProc.kill();
+  killOllama(); killChroma(); killReflex();
+  ttsServers.killAll();
   if (wakeWordProc)    wakeWordProc.kill();
   if (webcamPresProc)  webcamPresProc.kill();
   closeBrowser().catch(() => {});
@@ -1230,6 +951,8 @@ require('./ipc/window')(ipcMain, {
   loadConfig, saveConfig, getDesktopPresets, createDesktopWindow, setViewId,
 });
 
+ipcMain.on('log', (_, msg) => console.log(msg));
+
 // Sync desktop chat to phone via SSE (called from chat.html after stream-done)
 ipcMain.handle('broadcast-chat-message', (_, { userMsg, reply }) => {
   broadcastSSE({ type: 'message', source: 'desktop', role: 'user',      content: userMsg });
@@ -1246,12 +969,46 @@ ipcMain.handle('broadcast-chat-message', (_, { userMsg, reply }) => {
   if (_sessionTurns.length > 0 && _sessionTurns.length % 5 === 0) {
     _extractAnchorAsync(_sessionTurns.slice(-5)).catch(() => {});
   }
+  // Reflex layer — fire-and-forget soul state update
+  fetch('http://127.0.0.1:8788/reflex', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: userMsg }),
+    signal: AbortSignal.timeout(3000),
+  }).then(r => r.ok && r.json()).then(soul => {
+    if (!soul) return;
+    for (const [k, v] of Object.entries(soul)) {
+      if (k !== 'heartbeat' && moodState[k] !== undefined)
+        moodState[k] = moodState[k] * 0.8 + v * 0.2;
+    }
+  }).catch(() => {});
   return true;
 });
 
 ipcMain.handle('get-clipboard', () => clipboard.readText());
 ipcMain.handle('get-config',   () => loadConfig());
-ipcMain.handle('get-chatterbox-status', () => chatterboxStatus);
+ipcMain.handle('patch-config', (_, patch) => {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return false;
+  const cfg = loadConfig();
+  const merged = Object.assign({}, cfg);
+  const BLOCKED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+  for (const [k, v] of Object.entries(patch)) {
+    if (BLOCKED_KEYS.has(k)) continue;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const sub = Object.assign({}, cfg[k] || {});
+      for (const [sk, sv] of Object.entries(v)) {
+        if (BLOCKED_KEYS.has(sk)) continue;
+        sub[sk] = sv;
+      }
+      merged[k] = sub;
+    } else {
+      merged[k] = v;
+    }
+  }
+  saveConfig(merged);
+  return true;
+});
+ipcMain.handle('get-chatterbox-status', () => ttsServers.getChatterboxStatus());
 
 ipcMain.handle('restart-ollama', async () => {
   killOllama();
@@ -1277,14 +1034,32 @@ ipcMain.handle('clear-history', () => {
   try { if (fs.existsSync(memoryPath)) fs.unlinkSync(memoryPath); } catch(e) {}
 });
 
-// Keys IPC (stored in config file so they work without bashrc)
+// Keys IPC — secret fields are masked before being sent to the renderer so they
+// never appear in plaintext in renderer memory / devtools. The settings form
+// shows a placeholder when a key is present; on save, if the value equals the
+// placeholder we keep the existing stored value instead of overwriting with it.
+const KEY_PLACEHOLDER = '••••••••';
+const SECRET_FIELDS   = ['anthropic', 'elevenlabs', 'openai'];
+
 ipcMain.handle('load-keys', () => {
-  const cfg = loadConfig() || {};
-  return cfg.keys || {};
+  const cfg  = loadConfig() || {};
+  const keys = { ...(cfg.keys || {}) };
+  for (const f of SECRET_FIELDS) {
+    if (keys[f]) keys[f] = KEY_PLACEHOLDER;
+  }
+  return keys;
 });
 ipcMain.handle('save-keys', (_, keys) => {
-  const cfg = loadConfig() || {};
-  cfg.keys = keys;
+  if (!keys || typeof keys !== 'object') return;
+  const cfg     = loadConfig() || {};
+  const current = cfg.keys || {};
+  const merged  = { ...current };
+  for (const [k, v] of Object.entries(keys)) {
+    // Don't overwrite a stored secret with the display placeholder
+    if (SECRET_FIELDS.includes(k) && v === KEY_PLACEHOLDER) continue;
+    merged[k] = v;
+  }
+  cfg.keys = merged;
   saveConfig(cfg);
 });
 
@@ -1293,11 +1068,22 @@ ipcMain.handle('claude-chat', (_, messages, systemPrompt) => {
   return new Promise((resolve, reject) => {
     const cfg = loadConfig();
     const llmCfg = llmAdapter.getProviderConfig(cfg);
-    const apiKey = llmCfg.apiKey;
-    if (!apiKey) return reject(new Error('LLM API key not set'));
+
+    // Local Ollama (nyxia-ft, qwen3, etc)
+    if (llmCfg.family === 'openai' && llmCfg.hostname === '127.0.0.1' && llmCfg.port !== 3456) {
+      const { queryOllama } = require('./utils/ollama-client');
+      queryOllama(systemPrompt, messages[messages.length - 1]?.content || '', {
+        model: llmCfg.model, maxTokens: 1000, timeoutMs: 120000
+      }).then(text => text ? resolve(text) : reject(new Error('No response from Ollama')))
+        .catch(reject);
+      return;
+    }
+
     const body = JSON.stringify({ model: llmCfg.model, max_tokens: 1000, system: systemPrompt, messages });
-    const req = https.request({
+    const transport = llmCfg.secure === false ? require('http') : https;
+    const req = transport.request({
       hostname: llmCfg.hostname, path: llmCfg.path, method: 'POST',
+      ...(llmCfg.port ? { port: llmCfg.port } : {}),
       headers: llmAdapter.getHeaders(llmCfg, Buffer.byteLength(body))
     }, (res) => {
       let data = '';
@@ -1311,139 +1097,19 @@ ipcMain.handle('claude-chat', (_, messages, systemPrompt) => {
   });
 });
 
-// ── Mood → TTS instruction ────────────────────────────────────────────────────
-// Maps dominant mood dimension to a prosody instruction for Qwen3-TTS.
-const MOOD_INSTRUCTIONS = {
-  curiosity:  'speak with lively curiosity',
-  attachment: 'speak with warm affection',
-  creativity: 'speak with playful energy',
-  empathy:    'speak with gentle care',
-  tiredness:  'speak softly and tiredly',
-  fear:       'speak with quiet unease',
-  reasoning:  'speak calmly and thoughtfully',
-  motor:      'speak with energetic enthusiasm',
-};
-
-function moodToInstruction() {
-  const top = Object.entries(moodState)
-    .filter(([k]) => MOOD_INSTRUCTIONS[k])
-    .sort((a, b) => b[1] - a[1])[0];
-  if (!top || top[1] < 0.4) return '';
-  return MOOD_INSTRUCTIONS[top[0]];
-}
-
-// ── Shared TTS helper ────────────────────────────────────────────────────────
-// Pipelined: each sentence fires immediately — no serialization lock.
-// chat.html audioQueue sorts by idx and plays in order, so out-of-order
-// delivery is fine. GPU server queues requests internally.
-
-// Helper: try a local TTS port, resolve with Buffer on success, null on failure
-function tryPort(port, payload, timeoutMs) {
-  return new Promise((resolve) => {
-    const req = require('http').request({
-      hostname: '127.0.0.1', port, path: '/tts', method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-    }, (res) => {
-      if (res.statusCode !== 200) { resolve(null); return; }
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    });
-    req.setTimeout(timeoutMs, () => { req.destroy(); resolve(null); });
-    req.on('error', () => resolve(null));
-    req.write(payload); req.end();
-  });
-}
-
-// 14.17 — Lightweight keyword emotion check per sentence (no LLM — speed matters here)
-function _sentenceEmotion(text) {
-  const t = text.toLowerCase();
-  if (/\b(heh|hmm|ara|curious|wonder|interesting|fascina|what if)\b/.test(t)) return { emotion: 'curious',   intensity: 0.6 };
-  if (/\b(haha|funny|tease|playful|wink|smirk|joke)\b/.test(t))              return { emotion: 'playful',   intensity: 0.7 };
-  if (/!!|wow|yes+|amazing|brilliant|perfect|oh+/.test(t))                   return { emotion: 'happy',     intensity: 0.75 };
-  if (/\b(sorry|miss|lonely|alone|hurt|sad)\b/.test(t))                      return { emotion: 'sad',       intensity: 0.5 };
-  if (/\b(careful|worry|concern|warning|problem|issue)\b/.test(t))           return { emotion: 'concerned', intensity: 0.5 };
-  if (/function|const |class |api|json|error|debug|import|return/.test(t))   return { emotion: 'focused',   intensity: 0.5 };
-  return null;
-}
-
-function ttsChunk(text, idx, elKey, voiceId, event) {
-  const clean = text.replace(/\*[^*\n]*\*/g, '').replace(/I'M\b/g, "I'm").replace(/[✦~*_`#>]/g, '').replace(/\s+/g, ' ').trim();
-  if (clean.length < 2) return;
-  // Voice output — cortex_left (language production) + cerebellum (motor output)
-  fireBrain('cortex_left', 0.95, 0.8, clean.slice(0, 50));
-  fireBrain('Cerebellum', 0.9, 0.75);
-  // 14.17 — per-sentence emotion: shift avatar expression as each sentence plays
-  const sentEmotion = _sentenceEmotion(clean);
-  if (sentEmotion && mainWindow && !mainWindow.isDestroyed())
-    mainWindow.webContents.send('avatar-react', sentEmotion);
-  // Always route sentence to companion speech bubble (Jarvis mode — voice or not)
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('speak-bubble', clean, idx);
-  if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.webContents.send('speak-bubble', clean, idx);
-  // Also send raw text so chat.html can use browser TTS if engine is browser
-  if (!event.sender.isDestroyed()) event.sender.send('stream-tts-text', clean, idx);
-
-  // Fire TTS immediately — pipelined generation while previous sentence plays
-  const t0        = Date.now();
-  const instr     = moodToInstruction();
-  const body      = JSON.stringify({ text: clean });
-  const qwen3Body = JSON.stringify({ text: clean, ...(instr && { instruction: instr }) });
-  let settled = false;
-  const done = (label) => {
-    if (settled) return false;
-    settled = true;
-    console.log(`[${label}] sentence ${idx} ready in ${((Date.now()-t0)/1000).toFixed(1)}s`);
-    return true;
-  };
-
-  // Priority: Qwen3 (GPU, voice clone) → Kokoro → XTTS → ElevenLabs
-  tryPort(QWEN3_PORT, qwen3Body, 30000).then(buf => {
-    if (buf && done('qwen3')) {
-      if (!event.sender.isDestroyed())
-        event.sender.send('stream-audio', buf.toString('base64'), idx);
-      return;
-    }
-    return tryPort(KOKORO_PORT, body, 30000).then(buf2 => {
-      if (buf2 && done('kokoro')) {
-        if (!event.sender.isDestroyed())
-          event.sender.send('stream-audio', buf2.toString('base64'), idx);
-        return;
-      }
-      return tryPort(CHATTERBOX_PORT, body, 180000).then(buf3 => {
-        if (buf3 && done('xtts')) {
-          if (!event.sender.isDestroyed())
-            event.sender.send('stream-audio', buf3.toString('base64'), idx);
-          return;
-        }
-        console.warn(`[tts] all local engines failed for sentence ${idx} — ElevenLabs fallback`);
-        if (!settled && elKey && voiceId) { settled = true; _ttsElevenLabs(clean, idx, elKey, voiceId, event); }
-      });
-    });
-  });
-}
-
-function _ttsElevenLabs(clean, idx, elKey, voiceId, event) {
-  const b = JSON.stringify({ text: clean, model_id: 'eleven_multilingual_v2', voice_settings: { stability: 0.45, similarity_boost: 0.75, style: 0.3, use_speaker_boost: true } });
-  const req = https.request({
-    hostname: 'api.elevenlabs.io', path: `/v1/text-to-speech/${voiceId}/stream?optimize_streaming_latency=3`, method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'xi-api-key': elKey, 'Content-Length': Buffer.byteLength(b) }
-  }, (res) => {
-    const chunks = [];
-    res.on('data', c => chunks.push(c));
-    res.on('end', () => {
-      if (!event.sender.isDestroyed()) event.sender.send('stream-audio', Buffer.concat(chunks).toString('base64'), idx);
-    });
-  });
-  req.on('error', () => {});
-  req.write(b); req.end();
-}
+// ── TTS pipeline → src/tts/pipeline.js ───────────────────────────────────────
+const ttsChunk        = ttsPipeline.ttsChunk.bind(ttsPipeline);
+const moodToInstruction = ttsPipeline.moodToInstruction.bind(ttsPipeline);
+const tryPort         = ttsPipeline.tryPort;
 
 // ── SSE streaming helpers ────────────────────────────────────────────────────
 function streamAnthropic(event, messages, systemPrompt, claudeKey, elKey, voiceId) {
   const llmCfg = llmAdapter.getProviderConfig(loadConfig());
   const body = JSON.stringify({ model: llmCfg.model, max_tokens: 1000, stream: true, system: systemPrompt, messages });
-  const req = https.request({
+  const transport = llmCfg.secure === false ? require('http') : https;
+  const req = transport.request({
     hostname: llmCfg.hostname, path: llmCfg.path, method: 'POST',
+    ...(llmCfg.port ? { port: llmCfg.port } : {}),
     headers: llmAdapter.getHeaders({ ...llmCfg, apiKey: claudeKey || llmCfg.apiKey }, Buffer.byteLength(body))
   }, (res) => {
     let sseBuffer = '', textBuf = '', fullText = '', sentIdx = 0;
@@ -1490,6 +1156,9 @@ async function streamAnthropicAgentic(event, messages, systemPrompt, claudeKey, 
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('avatar-react', { emotion: state, intensity });
       }
+      if (desktopWindow && !desktopWindow.isDestroyed()) {
+        desktopWindow.webContents.send('avatar-react', { emotion: state, intensity });
+      }
     },
     fireBrainSector: (sector, payload, intensity = 1.0) => {
       const cap = sector.charAt(0).toUpperCase() + sector.slice(1);
@@ -1529,8 +1198,10 @@ async function streamAnthropicAgentic(event, messages, systemPrompt, claudeKey, 
     let streamDone = false;
 
     await new Promise((resolve, reject) => {
-      const req = https.request({
+      const transport = llmCfg.secure === false ? require('http') : https;
+      const req = transport.request({
         hostname: llmCfg.hostname, path: llmCfg.path, method: 'POST',
+        ...(llmCfg.port ? { port: llmCfg.port } : {}),
         headers: llmAdapter.getHeaders({ ...llmCfg, apiKey: claudeKey || llmCfg.apiKey }, Buffer.byteLength(body))
       }, (res) => {
         let sseBuffer = '';
@@ -1624,7 +1295,11 @@ function streamOpenAI(event, messages, systemPrompt, baseUrl, apiKey, model, elK
     // Pass extra options like keep_alive for VRAM management
     ...(options && { options })
   });
-  const url  = new URL('/v1/chat/completions', baseUrl);
+  // Join onto the base path — new URL('/v1/...', base) would discard base paths
+  // like Groq's /openai/v1 or Gemini's /v1beta/openai/
+  let _base = baseUrl.replace(/\/+$/, '');
+  if (new URL(_base).pathname === '/') _base += '/v1';
+  const url  = new URL(_base + '/chat/completions');
   const http = require('http');
   const lib  = url.protocol === 'https:' ? https : http;
   const req  = lib.request({
@@ -1685,164 +1360,11 @@ function streamOpenAI(event, messages, systemPrompt, baseUrl, apiKey, model, elK
   req.write(body); req.end();
 }
 
-// All council members — every provider that has a key, excluding Nyxia's own voice
-function getCouncilConfigs(keys) {
-  const voice = keys.provider || 'anthropic';
-  const all = [
-    { name: 'Gemini',   key: 'gemini',   baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKey: keys.geminiKey,   model: 'gemini-2.0-flash' },
-    { name: 'Groq',     key: 'groq',     baseUrl: 'https://api.groq.com/openai/v1',                           apiKey: keys.groqKey,     model: 'llama-3.3-70b-versatile' },
-    { name: 'Qwen3',    key: 'qwen3',    baseUrl: 'http://127.0.0.1:11434/v1',                               apiKey: 'ollama',         model: 'qwen3:8b' },
-    { name: 'Mistral',  key: 'mistral',  baseUrl: 'https://api.mistral.ai/v1',                                apiKey: keys.mistralKey,  model: 'mistral-small-latest' },
-  ];
-  return all.filter(c => c.apiKey && c.key !== voice);
-}
-
-// Query one council member — non-streaming, 7s timeout, returns { name, text }
-function queryCouncilMember(name, baseUrl, apiKey, model, messages) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ name, text: null }), 7000);
-    const url  = new URL('/v1/chat/completions', baseUrl);
-    const http = require('http');
-    const lib  = url.protocol === 'https:' ? https : http;
-    const lastUser = messages.filter(m => m.role === 'user').slice(-1);
-    const body = JSON.stringify({
-      model, max_tokens: 250, stream: false,
-      messages: [
-        { role: 'system', content: 'You are an advisor in a council. Give your honest perspective on the user\'s message in 2-3 sentences. Be direct and specific. No greetings.' },
-        ...lastUser
-      ]
-    });
-    const req = lib.request({
-      hostname: url.hostname, port: url.port || (url.protocol === 'https:' ? 443 : 80),
-      path: url.pathname, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
-        ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}) }
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        clearTimeout(timer);
-        try { resolve({ name, text: JSON.parse(data).choices?.[0]?.message?.content || null }); }
-        catch { resolve({ name, text: null }); }
-      });
-    });
-    req.on('error', () => { clearTimeout(timer); resolve({ name, text: null }); });
-    req.write(body); req.end();
-  });
-}
-
-// Route to the right base URL + key for each provider
-function getProviderConfig(keys) {
-  switch (keys.provider) {
-    case 'gemini':   return { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKey: keys.geminiKey   || '', model: keys.chatModel || 'gemini-2.0-flash' };
-    case 'grok':     return { baseUrl: 'https://api.x.ai/v1',                                     apiKey: keys.grokKey     || '', model: keys.chatModel || 'grok-3-mini' };
-    case 'groq':     return { baseUrl: 'https://api.groq.com/openai/v1',                           apiKey: keys.groqKey     || '', model: keys.chatModel || 'llama-3.3-70b-versatile' };
-    case 'deepseek': return { baseUrl: 'https://api.deepseek.com/v1',                              apiKey: keys.deepseekKey || '', model: keys.chatModel || 'deepseek-chat' };
-    case 'mistral':  return { baseUrl: 'https://api.mistral.ai/v1',                                apiKey: keys.mistralKey  || '', model: keys.chatModel || 'mistral-small-latest' };
-    case 'kimi':     return { baseUrl: 'https://api.moonshot.cn/v1',                               apiKey: keys.kimiKey     || '', model: keys.chatModel || 'moonshot-v1-32k' };
-    case 'openai':   return { baseUrl: keys.openaiBase || 'http://127.0.0.1:11434/v1',              apiKey: keys.openaiKey   || '', model: keys.chatModel || 'llama3.2' };
-    default:         return null; // anthropic
-  }
-}
-
-// Chat streaming — conference room: all council members speak, Nyxia decides
-// Classify the last user message to decide consultation mode:
-// 'casual'  — short/greeting, no council needed
-// 'dialog'  — conversational, use self-opinion only
-// 'council' — question or unknown topic, use full external council
-// 'agent'   — multi-step autonomous task (Phase 10.1)
-// 'shell'   — single terminal command
-// 'browser' — headed browser interaction
-// 'desktop' — app launch / UI control
-// 'filesystem' — local file read/write
-// 'search'  — live web lookup
-// 'fetch'   — URL content retrieval
-
-// Conversation sub-classifier (used as fallback and for 'conversation' LLM result)
-function _conversationMode(text) {
-  const selfDomain = /\b(you feel|you think|your opinion|do you like|are you|you believe|your favorite|you prefer|you miss|you want|you wish|you remember|you enjoy|you hate|you love|makes you|you scared|you happy|you sad)\b/i;
-  if (selfDomain.test(text)) return 'dialog';
-  const profile     = loadUserProfile();
-  const self        = loadSelf();
-  const sessions    = profile?.sessionCount || 0;
-  const reflections = self?.reflections?.length || 0;
-  const confidence  = Math.min(1.0, (sessions / 30) * 0.6 + (reflections / 15) * 0.4);
-  const isQuestion  = text.includes('?') || /\b(what|why|how|when|where|who|which|explain|tell me|do you know|can you|could you|is it|are there|does|did|will|would|should|define|describe)\b/i.test(text);
-  if (!isQuestion) return 'dialog';
-  if (confidence > 0.6) return 'dialog';
-  return 'council';
-}
-
-async function classifyMessage(messages) {
-  const last = messages.filter(m => m.role === 'user').slice(-1)[0]?.content || '';
-  const text = last.trim();
-
-  // Fast path — no LLM needed
-  if (text.length < 25) return 'casual';
-  const greetings = /^(hi|hey|hello|yo|sup|howdy|good (morning|evening|night|afternoon)|what's up|how are you|how r u)\b/i;
-  if (greetings.test(text)) return 'casual';
-  if (/\bagent:/i.test(text)) return 'agent';
-  if (/\b(generate|draw|create|make|paint|render)\b.{0,40}\b(image|picture|photo|illustration|art|drawing)\b/i.test(text)) return 'image';
-  if (/\b(image|picture|photo|illustration)\b.{0,20}\b(of|showing|with|depicting)\b/i.test(text)) return 'image';
-  const shellDirect = /^(ls\b|cat\b|pwd\b|echo\b|find\b|grep\b|ps\b|df\b|du\b|which\b|whoami\b|uname\b|env\b|python|node\b|npm\b|git\b)/;
-  if (shellDirect.test(text.trim())) return 'shell';
-  if (extractUrl(text)) return 'fetch';
-
-  // LLM classification — llama3.2:3b with JSON schema constrained output (~0.5s)
-  try {
-    const cfg = loadConfig();
-    const mindModel = cfg.mindModel || 'qwen3:8b';
-    const body = JSON.stringify({
-      model: mindModel,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Classify the user request into exactly one mode.\n' +
-            'agent — needs multiple tools in sequence (e.g. search then save to file, find info then install, research then write report)\n' +
-            'shell — run a single terminal/shell command\n' +
-            'browser — navigate or interact with a website in a browser\n' +
-            'desktop — open an app, click a UI element, control a window\n' +
-            'filesystem — read or write a local file only (no search needed)\n' +
-            'search — look up current information (news, weather, prices, software releases)\n' +
-            'conversation — chat, question, opinion, explanation, anything else'
-        },
-        { role: 'user', content: text }
-      ],
-      format: {
-        type: 'object',
-        properties: {
-          mode: { type: 'string', enum: ['agent','shell','browser','desktop','filesystem','search','image','conversation'] }
-        },
-        required: ['mode']
-      },
-      stream: false,
-      options: { temperature: 0, num_predict: 20 }
-    });
-
-    const res = await fetch('http://127.0.0.1:11434/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(8000)
-    });
-    if (res.ok) {
-      const data = await res.json();
-      const parsed = JSON.parse(data.message?.content || '{}');
-      const mode = parsed.mode;
-      if (mode && mode !== 'conversation') {
-        console.log('[classify]', mode, '—', text.slice(0, 60));
-        return mode;
-      }
-      if (mode === 'conversation') return _conversationMode(text);
-    }
-  } catch (e) {
-    console.warn('[classify] LLM unavailable, using fallback:', e.message);
-  }
-
-  // Regex fallback if LLM times out or fails
-  return _conversationMode(text);
-}
+// ── LLM providers + router → src/llm/providers.js + src/llm/router.js ────────
+const getCouncilConfigs  = providers.getCouncilConfigs;
+const queryCouncilMember = providers.queryCouncilMember;
+const getProviderConfig  = providers.getProviderConfig;
+const classifyMessage    = router.classifyMessage;
 
 // Streaming guard — read by awareness-loop to prevent interrupting active responses
 let _isStreaming = false;
@@ -1860,6 +1382,8 @@ require('./ipc/chat')(ipcMain, {
   // routing / brain
   classifyMessage, getCouncilConfigs, getProviderConfig,
   fireBrain, fireSector,
+  // jarvis uncertain-task queue → src/awareness/proactive.js + krix-memory.js
+  tryResolveUncertainTask,
   // council / agents
   queryCouncilMember, runAgentLoop, runCodingLoop,
   // tools
@@ -1869,15 +1393,19 @@ require('./ipc/chat')(ipcMain, {
   browserExecute, desktopExecute, browserLoad,
   // services / TTS state
   ensureOllama,
-  ensureQwen3: () => ensureQwen3(),
-  getQwen3Proc:  () => qwen3Proc,
-  setQwen3Proc:  v  => { qwen3Proc = v; },
+  ensureQwen3: () => ttsServers.ensureQwen3(),
+  getQwen3Proc:  ttsServers.getQwen3Proc,
+  setQwen3Proc:  ttsServers.setQwen3Proc,
   // beliefs state
-  getCortexBeliefs: () => _cortexBeliefs,
+  getCortexBeliefs: selfModelMod.getCortexBeliefs,
   // streaming
   streamOpenAI, streamAnthropicAgentic,
   // prompt
   buildSystemPrompt,
+  // mood
+  getMoodState: () => moodState,
+  // vision — voluntary look
+  lookNow: () => mind.lookNow(),
   // electron
   app,
 });
@@ -2081,14 +1609,7 @@ async function freeVram() {
   const killed = [];
 
   // Kill Nyxia-spawned GPU processes
-  const procs = [
-    { name: 'qwen3-tts',    proc: () => qwen3Proc,    kill: () => { if (qwen3Proc) { qwen3Proc.kill('SIGKILL'); qwen3Proc = null; } } },
-    { name: 'kokoro',       proc: () => kokoroProc,   kill: () => { if (kokoroProc) { kokoroProc.kill('SIGKILL'); kokoroProc = null; } } },
-    { name: 'chatterbox',   proc: () => chatterboxProc, kill: () => { if (chatterboxProc) { chatterboxProc.kill('SIGKILL'); chatterboxProc = null; } } },
-  ];
-  for (const p of procs) {
-    if (p.proc()) { p.kill(); killed.push(p.name); }
-  }
+  killed.push(...ttsServers.killAll());
 
   // Kill any stray Python GPU processes not tracked by Nyxia (e.g. orphaned TTS)
   try {

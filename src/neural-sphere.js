@@ -22,6 +22,7 @@ const MAX_NEURONS        = 15;
 const CHARGE_DECAY       = { normal: 0.15, wild: 0.18, wound: 0.08, dream: 0.12 };
 const DEATH_THRESHOLD    = 0.05;
 const DEFAULT_TEMP       = 0.4;
+let _arousalBoost        = 0;   // set externally by awareness-loop from brainstem_RAS
 const MISFIRE_BASE       = 0.04;
 const COLLISION_WINDOW   = 500;   // ms
 const RIP_CHARGE_MIN     = 0.85;
@@ -144,7 +145,7 @@ function _getTemperature(type) {
   if (type === 'wild')  base = 0.75;
   if (type === 'dream') base = 0.70;
   if (type === 'wound') base = 0.25;
-  return Math.min(base + (mood.creativity || 0) * 0.15 + (mood.curiosity || 0) * 0.10, 0.95);
+  return Math.min(base + (mood.creativity || 0) * 0.15 + (mood.curiosity || 0) * 0.10 + _arousalBoost, 0.95);
 }
 
 // ── Wildness (genome-aware) ───────────────────────────────────────────────────
@@ -398,7 +399,7 @@ function _decayNodes() {
 
 // ── Spawn neurons at a soul node ──────────────────────────────────────────────
 function _spawnAt(nodeId, charge, type) {
-  if (!_graph.nodes.has(nodeId)) return;
+  if (!_graph || !_graph.nodes.has(nodeId)) return;
   if (_neurons.size >= MAX_NEURONS) {
     // Wound neurons are persistent — evict the lowest-charge normal neuron to make room
     if (type === 'wound') {
@@ -427,6 +428,7 @@ function _spawnAt(nodeId, charge, type) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function init({ soulNodesPath, archivePath, graphPath, seedConceptFn, addThoughtFn, ollamaQuery, getMoodState, getMindModel, scoreEgo }) {
+  _soulNodesPath = soulNodesPath;
   _graph        = _loadGraph(soulNodesPath);
   if (graphPath) _loadKnowledgeGraph(graphPath);
   _archivePath  = archivePath;
@@ -496,4 +498,56 @@ function getVisualState() {
   };
 }
 
-module.exports = { init, tick, spawnNeurons, spawnDreamNeurons, spawnWoundNeurons, getStats, getVisualState };
+// Soul node path saved at init so saveSoulGraph doesn't need it passed in
+let _soulNodesPath = null;
+
+/**
+ * Add a new node to the live soul graph at runtime.
+ * connectedTo: array of existing node IDs to link with weight 0.4.
+ * No-ops if id already exists.
+ */
+function addSoulNode(id, cluster = 'ongoing', connectedTo = []) {
+  if (!_graph || _graph.nodes.has(id)) return false;
+  _graph.nodes.set(id, { id, cluster, activation: 0.0 });
+  _graph.adj.set(id, []);
+  for (const target of connectedTo) {
+    if (!_graph.nodes.has(target)) continue;
+    _graph.adj.get(id).push({ target, weight: 0.4 });
+    _graph.adj.get(target)?.push({ target: id, weight: 0.4 });
+  }
+  console.log(`[sphere] soul grew: "${id}" (${cluster}) ← [${connectedTo.join(', ')}]`);
+  return true;
+}
+
+/**
+ * Persist current soul graph back to disk.
+ * Called by sleep-cycle after addSoulNode.
+ */
+function saveSoulGraph(soulNodesPath) {
+  const p = soulNodesPath || _soulNodesPath;
+  if (!_graph || !p) return;
+  try {
+    const nodes = [..._graph.nodes.values()].map(n => ({ id: n.id, cluster: n.cluster }));
+    const edges = [];
+    const seen  = new Set();
+    for (const [src, targets] of _graph.adj.entries()) {
+      for (const { target, weight } of targets) {
+        const key = [src, target].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({ source: src, target, weight });
+      }
+    }
+    fs.writeFileSync(p, JSON.stringify({ nodes, edges }, null, 2));
+    console.log(`[sphere] soul saved: ${nodes.length} nodes, ${edges.length} edges`);
+  } catch(e) {
+    console.log('[sphere] soul save error:', e.message);
+  }
+}
+
+/** Return in-memory archived sub-nodes for sleep-cycle soul derivation */
+function getArchivedThoughts() { return [..._archived]; }
+
+function setArousalBoost(v) { _arousalBoost = Math.max(0, Math.min(0.3, v)); }
+
+module.exports = { init, tick, spawnNeurons, spawnDreamNeurons, spawnWoundNeurons, getStats, getVisualState, addSoulNode, saveSoulGraph, getArchivedThoughts, setArousalBoost };

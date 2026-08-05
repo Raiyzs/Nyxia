@@ -34,9 +34,116 @@ const THOUGHT_MAX = 20;
 // ── Activation map: concept → { value, decay, lastSeeded } ───────────────────
 // decay: 'normal' (half-life ~45s) | 'slow' (wounds/emotional, half-life ~5min)
 let activationMap = new Map();
-const DECAY_NORMAL = 0.985; // per 500ms tick
-const DECAY_SLOW   = 0.995;
-const ACTIVATION_THRESHOLD = 0.68;
+const DECAY_NORMAL_BASE     = 0.985; // per 500ms tick
+const DECAY_SLOW            = 0.995;
+const ACTIVATION_THRESHOLD_BASE = 0.68;
+
+// ── Brain-core state (polled from port 7422 every 30s) ────────────────────────
+// brainstem_RAS arousal modulates decay, threshold, sphere temp, DMN gate.
+let _brainCoreState = {
+  arousal:    0,    // 0–1 from brainstem_RAS spike density
+  amygdalaL:  0,    // 0–1 fear/tension bias
+  amygdalaR:  0,    // 0–1 curiosity/approach bias
+  dlPFC:      0,    // 0–1 cognitive control active
+  patterns:   [],   // top pattern strings from pattern_detector
+  step:       0,
+};
+
+// Dynamic values derived from _brainCoreState — updated by _pollBrainCore
+let _decayNormal         = DECAY_NORMAL_BASE;
+let _activationThreshold = ACTIVATION_THRESHOLD_BASE;
+let _sphereTemp          = 0.4; // passed to neural-sphere on each tick
+
+async function _pollBrainCore() {
+  try {
+    const res = await fetch('http://127.0.0.1:7422/brain_state');
+    if (!res.ok) return;
+    const state = await res.json();
+
+    const spikes  = state.recent_spikes || [];  // [{id, step}]
+    const total   = spikes.length || 1;
+
+    const rasCount = spikes.filter(s => s.id === 'brainstem_RAS').length;
+    const aLCount  = spikes.filter(s => s.id === 'amygdala_L').length;
+    const aRCount  = spikes.filter(s => s.id === 'amygdala_R').length;
+    const pfcCount = spikes.filter(s => s.id === 'dlPFC_L').length;
+
+    const arousal   = Math.min(1, rasCount / 5);   // 5+ RAS spikes in last 20 → full arousal
+    const amygdalaL = Math.min(1, aLCount  / 3);
+    const amygdalaR = Math.min(1, aRCount  / 3);
+    const dlPFC     = Math.min(1, pfcCount / 3);
+
+    _brainCoreState = {
+      arousal, amygdalaL, amygdalaR, dlPFC,
+      patterns: (state.top_patterns || []).map(p => p.sequence || p).flat().filter(Boolean),
+      step: state.step || 0,
+    };
+
+    // ── Recompute dynamic variables ───────────────────────────────────────────
+    // High arousal → slower decay (thoughts persist), lower threshold (surfaces easier)
+    // Low arousal  → faster decay (mind quiets), higher threshold (harder to surface)
+    _decayNormal         = DECAY_NORMAL_BASE - arousal * 0.008;  // 0.985 → 0.977
+    _activationThreshold = ACTIVATION_THRESHOLD_BASE - arousal * 0.15; // 0.68 → 0.53
+    _sphereTemp          = 0.4 + arousal * 0.3;                  // 0.4 → 0.7
+    sphere.setArousalBoost(arousal * 0.3);
+
+    // ── Seed amygdala activity into activation map ────────────────────────────
+    if (amygdalaL > 0.3) seedConcept('tension',    amygdalaL * 0.35, 'slow');
+    if (amygdalaR > 0.3) seedConcept('curiosity',  amygdalaR * 0.4);
+    if (dlPFC     > 0.4) seedConcept('reflection', dlPFC     * 0.3);
+
+    // ── Seed recurring brain patterns as weak activations ────────────────────
+    for (const concept of _brainCoreState.patterns.slice(0, 3)) {
+      if (concept && typeof concept === 'string') {
+        seedConcept(concept.toLowerCase().replace(/\s+/g, '_'), 0.12);
+      }
+    }
+
+    console.log(`[mind] brain_core: arousal=${arousal.toFixed(2)} aL=${amygdalaL.toFixed(2)} aR=${amygdalaR.toFixed(2)} dlPFC=${dlPFC.toFixed(2)} threshold=${_activationThreshold.toFixed(2)}`);
+  } catch (_) {
+    // brain_core not running — silent, keep last state
+  }
+}
+
+// ── KRIX-BRAIN runtime state (polled from port 7421 every 60s) ────────────────
+// Maps cross-session cognitive state into Nyxia's live awareness.
+// inner_tension → tension seed | current_attention → concept drip | curiosity_gaps → curiosity
+async function _pollKrixBrain() {
+  try {
+    const res = await fetch('http://127.0.0.1:7421/runtime_state');
+    if (!res.ok) return;
+    const state = await res.json();
+
+    const tension = typeof state.inner_tension === 'number' ? state.inner_tension : 0;
+
+    if (tension > 0.2) seedConcept('tension', tension * 0.4, 'slow');
+
+    // Current attention — extract first 3 meaningful words as concept seeds
+    if (state.current_attention && typeof state.current_attention === 'string') {
+      const words = state.current_attention
+        .toLowerCase().replace(/[^a-z0-9\s_-]/g, '').split(/\s+/)
+        .filter(w => w.length > 3).slice(0, 3);
+      for (const w of words) seedConcept(w.replace(/-/g, '_'), 0.15);
+    }
+
+    // Curiosity gaps → boost curiosity proportional to count
+    const gaps = Array.isArray(state.curiosity_gaps) ? state.curiosity_gaps : [];
+    if (gaps.length > 0) seedConcept('curiosity', Math.min(0.5, gaps.length * 0.12));
+
+    // Thought bank → weak background seeds
+    const thoughts = Array.isArray(state.thought_bank) ? state.thought_bank : [];
+    for (const t of thoughts.slice(0, 3)) {
+      if (typeof t === 'string') {
+        const w = t.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).find(w => w.length > 4);
+        if (w) seedConcept(w, 0.08);
+      }
+    }
+
+    console.log(`[mind] krix_brain: tension=${tension.toFixed(2)} gaps=${gaps.length} thoughts=${thoughts.length}`);
+  } catch (_) {
+    // krix-brain api not running — silent
+  }
+}
 
 // ── Injected dependencies ─────────────────────────────────────────────────────
 let _mind           = null;
@@ -165,7 +272,7 @@ const STOPWORDS = new Set([
 function _ollamaQuery(sys, user, maxTokens = 120, timeoutMs = 8000, model, priority = 2) {
   return scheduler.enqueue(
     priority,
-    () => queryOllama(sys, user, { model: model || _getMindModel?.() || 'qwen3:8b', maxTokens, timeoutMs }),
+    () => queryOllama(sys, user, { model: model || _getMindModel?.() || 'nyxia-ft', maxTokens, timeoutMs }),
     '_ollamaQuery'
   );
 }
@@ -256,8 +363,17 @@ function _seedFromMood() {
   const mood = _getMoodState?.() || {};
   for (const [key, concepts] of Object.entries(MOOD_CONCEPTS)) {
     const v = mood[key] || 0;
-    if (v > 0.3) concepts.forEach(c => seedConcept(c, v * 0.04)); // gentle drip per tick
+    if (v > 0.3) concepts.forEach(c => seedConcept(c, v * 0.04));
   }
+  // Somatic sphere injection — mood peaks spawn typed neurons, not just concept drips
+  try {
+    const { getSomaticBias } = require('./somatic');
+    const { sphereType, clusters } = getSomaticBias(mood);
+    if (sphereType && clusters.length > 0 && Math.random() < 0.08) {
+      const target = clusters[Math.floor(Math.random() * clusters.length)];
+      sphere.spawnNeurons(target, 0.45, sphereType);
+    }
+  } catch(_) {}
 }
 
 // ── Memory drip (every 5 minutes) ────────────────────────────────────────────
@@ -534,9 +650,9 @@ let _tickCount = 0;
 async function _tick() {
   _tickCount++;
 
-  // 1. Decay all activations
+  // 1. Decay all activations (rate shaped by brainstem_RAS arousal)
   for (const [concept, entry] of activationMap.entries()) {
-    const rate = entry.decay === 'slow' ? DECAY_SLOW : DECAY_NORMAL;
+    const rate = entry.decay === 'slow' ? DECAY_SLOW : _decayNormal;
     entry.value *= rate;
     if (entry.value < 0.04) activationMap.delete(concept);
   }
@@ -560,13 +676,13 @@ async function _tick() {
   // 5. Check for threshold crossing — generate thought
   if (!_isStreaming?.() && now - _lastThoughtGen > THOUGHT_GEN_COOLDOWN_MS) {
     const peak = _peakActivation();
-    if (peak.value >= ACTIVATION_THRESHOLD) {
+    if (peak.value >= _activationThreshold) {
       await _generateThoughtFromActivation();
     }
   }
 
-  // 6. DMN spontaneous check — every 2min
-  if (_tickCount % 240 === 0) _dmnSpontaneous();
+  // 6. DMN spontaneous check — every 2min, suppressed when RAS arousal is high
+  if (_tickCount % 240 === 0 && _brainCoreState.arousal < 0.6) _dmnSpontaneous();
 
   // 7. Dwell detection — every 60s
   if (_tickCount % 120 === 0) _checkDwell();
@@ -709,6 +825,15 @@ function startAwarenessLoop({ chatWindow, mind, lanceMemory, getSelfModel, getMo
 
   // Training data check — every 5min
   setInterval(_checkTrainingData, 5 * 60 * 1000);
+
+  // Brain-core poll — read brainstem_RAS arousal + amygdala + patterns every 30s
+  _pollBrainCore();
+  setInterval(_pollBrainCore, 30 * 1000);
+
+  // KRIX-BRAIN runtime state — cross-session attention/tension/curiosity every 60s
+  // Delay first poll to let neural-sphere finish init
+  setTimeout(_pollKrixBrain, 15 * 1000);
+  setInterval(_pollKrixBrain, 60 * 1000);
 
   console.log('[mind] activation loop started');
 }

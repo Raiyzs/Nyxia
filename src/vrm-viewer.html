@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Nyxia — VRM Viewer</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../node_modules/three/build/three.module.js",
+    "three/addons/": "../node_modules/three/examples/jsm/",
+    "@pixiv/three-vrm": "../node_modules/@pixiv/three-vrm/lib/three-vrm.module.js"
+  }
+}
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0414;
+    overflow: hidden;
+    width: 100vw; height: 100vh;
+    font-family: sans-serif;
+  }
+  #canvas-wrap {
+    position: absolute;
+    inset: 0;
+    filter:
+      drop-shadow(0 0 22px rgba(140,50,255,0.45))
+      drop-shadow(0 0 50px rgba(100,20,200,0.2));
+  }
+  #three-canvas { display: block; }
+  #loading {
+    position: absolute;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(190,120,255,0.65);
+    font-size: 10px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    pointer-events: none;
+    white-space: nowrap;
+    text-shadow: 0 0 12px rgba(160,80,255,0.4);
+  }
+
+  #rotate-panel {
+    position: absolute;
+    right: 14px;
+    top: 14px;
+    bottom: 14px;
+    display: flex;
+    gap: 18px;
+    z-index: 50;
+  }
+  .rot-slider {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    background: rgba(10,4,20,0.55);
+    border: 1px solid rgba(168,85,247,0.3);
+    border-radius: 10px;
+    padding: 10px 6px;
+    backdrop-filter: blur(8px);
+  }
+  .rot-slider label {
+    color: rgba(230,200,255,0.85);
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .rot-slider input[type="range"] {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 20px;
+    flex: 1;
+    accent-color: #a855f7;
+  }
+  .rot-slider .val {
+    color: rgba(190,120,255,0.7);
+    font-size: 10px;
+    min-width: 32px;
+    text-align: center;
+  }
+  .rot-slider .reset {
+    background: rgba(168,85,247,0.15);
+    border: 1px solid rgba(168,85,247,0.4);
+    color: rgba(230,200,255,0.85);
+    font-size: 10px;
+    border-radius: 5px;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  .rot-slider .reset:hover { background: rgba(168,85,247,0.3); }
+
+  #anim-panel {
+    position: absolute;
+    left: 14px;
+    right: 190px;
+    bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(10,4,20,0.55);
+    border: 1px solid rgba(168,85,247,0.3);
+    border-radius: 10px;
+    padding: 8px 12px;
+    backdrop-filter: blur(8px);
+    z-index: 50;
+    font-size: 11px;
+    color: rgba(230,200,255,0.85);
+  }
+  #anim-panel select {
+    background: rgba(20,8,35,0.8);
+    color: rgba(230,200,255,0.9);
+    border: 1px solid rgba(168,85,247,0.4);
+    border-radius: 5px;
+    padding: 3px 6px;
+    font-size: 11px;
+    max-width: 160px;
+  }
+  #anim-panel button {
+    background: rgba(168,85,247,0.15);
+    border: 1px solid rgba(168,85,247,0.4);
+    color: rgba(230,200,255,0.85);
+    font-size: 11px;
+    border-radius: 5px;
+    padding: 3px 10px;
+    cursor: pointer;
+  }
+  #anim-panel button:hover { background: rgba(168,85,247,0.3); }
+  #anim-panel input[type="range"] {
+    flex: 1;
+    accent-color: #a855f7;
+  }
+  #anim-time { min-width: 70px; text-align: right; }
+</style>
+</head>
+<body>
+<div id="canvas-wrap">
+  <canvas id="three-canvas"></canvas>
+</div>
+<div id="loading">Loading model...</div>
+
+<div id="rotate-panel">
+  <div class="rot-slider">
+    <label>L / R</label>
+    <input id="yaw-slider" type="range" min="-180" max="180" value="0" step="1">
+    <span class="val" id="yaw-val">0°</span>
+    <button class="reset" id="yaw-reset">reset</button>
+  </div>
+  <div class="rot-slider">
+    <label>Up / Down</label>
+    <input id="pitch-slider" type="range" min="-60" max="60" value="0" step="1">
+    <span class="val" id="pitch-val">0°</span>
+    <button class="reset" id="pitch-reset">reset</button>
+  </div>
+</div>
+
+<div id="anim-panel">
+  <select id="clip-select"><option>Loading clips...</option></select>
+  <button id="play-pause">Pause</button>
+  <input id="scrub-slider" type="range" min="0" max="1" step="0.001" value="0">
+  <span id="anim-time">0.00 / 0.00</span>
+</div>
+
+<script>
+const path = require('path');
+const { pathToFileURL } = require('url');
+const { NyxiaAvatarController } = require('./avatar-brain');
+
+const fs = require('fs');
+const modelFilePath = path.join(__dirname, '../3d avatar/girl_character2_test.vrm');
+const animsFilePath = path.join(__dirname, '../3d avatar/nyxia-anims.glb');
+window.modelBuffer = null;
+fs.readFile(modelFilePath, (err, _nodeBuf) => {
+  if (err) { document.getElementById('loading').textContent = `VRM read error: ${err.message}`; return; }
+  const _arrayBuf = new ArrayBuffer(_nodeBuf.byteLength);
+  new Uint8Array(_arrayBuf).set(_nodeBuf);
+  window.modelBuffer = _arrayBuf;
+  window.dispatchEvent(new Event('glb-ready'));
+});
+window.dracoPath = pathToFileURL(path.join(__dirname, '../node_modules/three/examples/jsm/libs/draco/')).href;
+window.nyxiaState = 'idle';
+
+// ── Orbit rotation sliders — rotate the camera AROUND the avatar, not translate it ──
+const orbit = { yaw: 0, pitch: 0 }; // radians
+const yawSlider   = document.getElementById('yaw-slider');
+const pitchSlider = document.getElementById('pitch-slider');
+const yawVal      = document.getElementById('yaw-val');
+const pitchVal    = document.getElementById('pitch-val');
+
+yawSlider.addEventListener('input', () => {
+  orbit.yaw = (yawSlider.value * Math.PI) / 180;
+  yawVal.textContent = `${yawSlider.value}°`;
+});
+pitchSlider.addEventListener('input', () => {
+  orbit.pitch = (pitchSlider.value * Math.PI) / 180;
+  pitchVal.textContent = `${pitchSlider.value}°`;
+});
+document.getElementById('yaw-reset').addEventListener('click', () => {
+  yawSlider.value = 0; orbit.yaw = 0; yawVal.textContent = '0°';
+});
+document.getElementById('pitch-reset').addEventListener('click', () => {
+  pitchSlider.value = 0; orbit.pitch = 0; pitchVal.textContent = '0°';
+});
+
+// ── Animation clip picker + scrub — for inspecting retargeted poses frame-by-frame ──
+const clipSelect  = document.getElementById('clip-select');
+const playPauseBtn = document.getElementById('play-pause');
+const scrubSlider  = document.getElementById('scrub-slider');
+const animTimeEl   = document.getElementById('anim-time');
+window._animCtrl = { mixer: null, action: null, clips: {} };
+
+function fmtTime(t) { return t.toFixed(2); }
+
+function selectClip(name) {
+  const ctrl = window._animCtrl;
+  const clip = ctrl.clips[name];
+  if (!ctrl.mixer || !clip) return;
+  if (ctrl.action) ctrl.action.stop();
+  ctrl.action = ctrl.mixer.clipAction(clip);
+  ctrl.action.reset().play();
+  ctrl.action.paused = playPauseBtn.textContent === 'Play';
+  scrubSlider.max = clip.duration.toFixed(3);
+  scrubSlider.value = 0;
+  animTimeEl.textContent = `0.00 / ${fmtTime(clip.duration)}`;
+}
+
+clipSelect.addEventListener('change', () => selectClip(clipSelect.value));
+
+playPauseBtn.addEventListener('click', () => {
+  const ctrl = window._animCtrl;
+  if (!ctrl.action) return;
+  ctrl.action.paused = !ctrl.action.paused;
+  playPauseBtn.textContent = ctrl.action.paused ? 'Play' : 'Pause';
+});
+
+scrubSlider.addEventListener('input', () => {
+  const ctrl = window._animCtrl;
+  if (!ctrl.action) return;
+  ctrl.action.paused = true;
+  playPauseBtn.textContent = 'Play';
+  ctrl.action.time = parseFloat(scrubSlider.value);
+  ctrl.mixer.update(0);
+  animTimeEl.textContent = `${fmtTime(ctrl.action.time)} / ${fmtTime(ctrl.action.getClip().duration)}`;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'r') { e.preventDefault(); location.reload(); }
+});
+
+// ── Automation control file — lets an external script drive clip/time
+// selection without simulating clicks on the native <select> dropdown. ──
+const CONTROL_FILE = '/tmp/claude-1000/-var-home-kvoldnes-claude-projects-nyxia/9d30f3f7-a907-42a4-ae4c-f0b291930a2c/scratchpad/vrm-control.json';
+let _lastControlSeq = -1;
+setInterval(() => {
+  fs.readFile(CONTROL_FILE, 'utf8', (err, data) => {
+    if (err) { console.log('[control] read err', err.message); return; }
+    let cmd;
+    try { cmd = JSON.parse(data); } catch (e) { console.log('[control] parse err', e.message); return; }
+    if (cmd.seq === _lastControlSeq) return;
+    // If a clip was requested but clips haven't finished loading/retargeting
+    // yet, don't mark this seq consumed — retry on the next poll instead of
+    // silently dropping the command.
+    if (cmd.clip && !window._animCtrl.clips[cmd.clip]) return;
+    console.log('[control] applying', JSON.stringify(cmd));
+    _lastControlSeq = cmd.seq;
+    if (cmd.clip) {
+      clipSelect.value = cmd.clip;
+      selectClip(cmd.clip);
+    }
+    if (typeof cmd.yaw === 'number') {
+      yawSlider.value = cmd.yaw;
+      orbit.yaw = (cmd.yaw * Math.PI) / 180;
+      yawVal.textContent = `${cmd.yaw}°`;
+    }
+    const ctrl = window._animCtrl;
+    if (ctrl.action && typeof cmd.time === 'number') {
+      ctrl.action.paused = true;
+      playPauseBtn.textContent = 'Play';
+      ctrl.action.time = cmd.time;
+      ctrl.mixer.update(0);
+      animTimeEl.textContent = `${fmtTime(ctrl.action.time)} / ${fmtTime(ctrl.action.getClip().duration)}`;
+      scrubSlider.value = ctrl.action.time;
+    }
+    if (cmd.dump) {
+      const durations = {};
+      for (const [name, clip] of Object.entries(window._animCtrl.clips)) durations[name] = clip.duration;
+      fs.writeFileSync(CONTROL_FILE.replace('vrm-control.json', 'vrm-durations.json'), JSON.stringify(durations, null, 2));
+    }
+  });
+}, 200);
+
+const loadEl = document.getElementById('loading');
+function showErr(msg) { loadEl.textContent = msg; }
+window.onerror = (msg, src, line) => showErr(`JS Error: ${msg} (${line})`);
+window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
+
+(async () => {
+  try {
+    loadEl.textContent = 'Importing Three.js...';
+    const THREE           = await import('three');
+    const { GLTFLoader }      = await import('three/addons/loaders/GLTFLoader.js');
+    const { DRACOLoader }     = await import('three/addons/loaders/DRACOLoader.js');
+    const { EffectComposer }  = await import('three/addons/postprocessing/EffectComposer.js');
+    const { RenderPass }      = await import('three/addons/postprocessing/RenderPass.js');
+    const { UnrealBloomPass } = await import('three/addons/postprocessing/UnrealBloomPass.js');
+    const { ShaderPass }      = await import('three/addons/postprocessing/ShaderPass.js');
+    const { VRMLoaderPlugin, VRMUtils } = await import('@pixiv/three-vrm');
+    const { buildRetargeter, buildRestIdleClip } = require('./mixamo-vrm-retarget');
+    const retargetMixamoToVRM = buildRetargeter(THREE);
+    loadEl.textContent = 'Three.js loaded, parsing model...';
+
+    const canvas = document.getElementById('three-canvas');
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: false });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x0a0414, 1);
+
+    const scene  = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.001, 1000);
+    camera.position.set(0, 1, 3);
+    camera.lookAt(0, 1, 0);
+
+    const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      format: THREE.RGBAFormat, type: THREE.HalfFloatType,
+    });
+    const composer = new EffectComposer(renderer, composerTarget);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.5, 0.82
+    );
+    composer.addPass(bloomPass);
+
+    function resize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      composer.setSize(window.innerWidth, window.innerHeight);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const ambientLight = new THREE.AmbientLight(0x1a0530, 0.6);
+    scene.add(ambientLight);
+    const keyLight = new THREE.DirectionalLight(0xb060ff, 1.8);
+    keyLight.position.set(1.5, 3, 2);
+    scene.add(keyLight);
+    const backRim = new THREE.DirectionalLight(0x00d4ff, 0.5);
+    backRim.position.set(-1, 1.5, -3);
+    scene.add(backRim);
+    const underFill = new THREE.PointLight(0x6020a0, 0.45, 8);
+    underFill.position.set(0, -0.5, 1.5);
+    scene.add(underFill);
+
+    let mouseNX = 0, mouseNY = 0;
+    window.addEventListener('mousemove', (e) => {
+      mouseNX = (e.clientX / window.innerWidth  - 0.5) * 2;
+      mouseNY = (e.clientY / window.innerHeight - 0.5) * 2;
+    });
+
+    let model = null, mixer = null, avatarCtrl = null, modelBaseY = 0;
+    let headBone = null, neckBone = null;
+    let faceMesh = null;
+    const faceState = {};
+    let blinkTimer = 3, blinkPhase = 'wait';
+
+    const clock = new THREE.Timer();
+    let t = 0;
+
+    const draco = new DRACOLoader();
+    draco.setDecoderPath(window.dracoPath);
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(draco);
+    loader.register((parser) => new VRMLoaderPlugin(parser));
+
+    if (!window.modelBuffer) {
+      loadEl.textContent = 'Reading model file...';
+      await new Promise(resolve => window.addEventListener('glb-ready', resolve, { once: true }));
+    }
+    loadEl.textContent = 'Parsing model...';
+
+    loader.parse(window.modelBuffer, '', (gltf) => {
+      const vrm = gltf.userData.vrm;
+      if (vrm) {
+        VRMUtils.removeUnnecessaryVertices(gltf.scene);
+        VRMUtils.combineSkeletons(gltf.scene);
+        window.nyxiaVRM = vrm;
+      }
+      model = vrm ? vrm.scene : gltf.scene;
+
+      scene.add(model);
+      scene.updateMatrixWorld(true);
+
+      model.traverse(child => {
+        if (!child.isSkinnedMesh) return;
+        child.frustumCulled = false;
+        const skel = child.skeleton;
+        child.pose();
+        scene.updateMatrixWorld(true);
+        skel.calculateInverses();
+        child.bind(skel, child.matrixWorld);
+        skel.update();
+      });
+
+      model.traverse(child => {
+        if (!child.isMesh && !child.isSkinnedMesh) return;
+        child.frustumCulled = false;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        mats.forEach(m => {
+          if (!m) return;
+          m.transparent = false;
+          m.alphaTest   = 0;
+          m.depthWrite  = true;
+          m.side        = THREE.FrontSide;
+          m.needsUpdate = true;
+        });
+      });
+
+      model.position.set(0, 0, 0);
+      model.rotation.set(0, 0, 0);
+      scene.updateMatrixWorld(true);
+
+      const geoBox = new THREE.Box3();
+      model.traverse(child => {
+        if ((child.isMesh || child.isSkinnedMesh) && child.geometry?.attributes.position) {
+          child.geometry.computeBoundingBox();
+          const b = child.geometry.boundingBox.clone().applyMatrix4(child.matrixWorld);
+          geoBox.union(b);
+        }
+      });
+      if (geoBox.isEmpty()) geoBox.set(new THREE.Vector3(-1,0,-1), new THREE.Vector3(1,2,1));
+
+      const h  = Math.max(0.5, geoBox.max.y - geoBox.min.y);
+      const cx = (geoBox.max.x + geoBox.min.x) / 2;
+      const cz = (geoBox.max.z + geoBox.min.z) / 2;
+
+      model.position.set(-cx, -geoBox.min.y, -cz);
+      modelBaseY = -geoBox.min.y;
+
+      camera.fov = 42;
+      const dist    = h * 1.35;
+      const camY    = h * 0.95;
+      const lookAtY = h * 0.58;
+      camera.position.set(0, camY, dist);
+      camera.lookAt(0, lookAtY, 0);
+      camera.far = dist * 6;
+      camera.updateProjectionMatrix();
+      window._camBase = { x: 0, y: camY, z: dist, lookY: lookAtY };
+
+      loadEl.style.display = 'none';
+
+      model.traverse(c => {
+        if (c.isSkinnedMesh && c.skeleton) {
+          if (!headBone) {
+            for (const b of c.skeleton.bones) {
+              const n = b.name.toLowerCase();
+              if (!headBone && /head/.test(n) && !/headtop|eye|hair/.test(n)) headBone = b;
+              if (!neckBone && /neck/.test(n)) neckBone = b;
+            }
+          }
+        }
+      });
+
+      mixer = new THREE.AnimationMixer(model);
+      window._animCtrl.mixer = mixer;
+
+      function initClips(clips) {
+        window._animCtrl.clips = {};
+        clipSelect.innerHTML = '';
+        clips.forEach(c => {
+          window._animCtrl.clips[c.name] = c;
+          const opt = document.createElement('option');
+          opt.value = c.name; opt.textContent = c.name;
+          clipSelect.appendChild(opt);
+        });
+        // Let avatarCtrl pick the default the same way production does (through
+        // ANIM_MAP, not a naive /idle/i match here) — a second, independent
+        // "idle" lookup in this test harness previously raced avatarCtrl's own
+        // default and could show a different clip than what actually ships.
+        try {
+          avatarCtrl = new NyxiaAvatarController(mixer, clips);
+          window._animCtrl.action = avatarCtrl.currentAction;
+          if (avatarCtrl.currentAction) clipSelect.value = avatarCtrl.currentAction.getClip().name;
+        } catch(e) {
+          console.warn('[avatar] controller init failed:', e.message);
+          const fallback = clips.find(a => /idle/i.test(a.name)) || clips[0];
+          if (fallback) { clipSelect.value = fallback.name; selectClip(fallback.name); }
+        }
+      }
+
+      if (vrm) {
+        fs.readFile(animsFilePath, (err2, nodeBuf2) => {
+          if (err2) { console.error('[vrm-viewer] anims glb missing:', err2.message); initClips(gltf.animations); return; }
+          const ab = nodeBuf2.buffer.slice(nodeBuf2.byteOffset, nodeBuf2.byteOffset + nodeBuf2.byteLength);
+          const dl2 = new DRACOLoader();
+          dl2.setDecoderPath(window.dracoPath);
+          const ld2 = new GLTFLoader();
+          ld2.setDRACOLoader(dl2);
+          ld2.register((parser) => new VRMLoaderPlugin(parser));
+          ld2.parse(ab, '', g2 => {
+            window._rawMixamoClips = g2.animations; // debug: pre-retarget source clips
+            const retargeted = retargetMixamoToVRM(g2.animations, vrm);
+            retargeted.push(buildRestIdleClip(THREE, vrm));
+            console.log(`[vrm-viewer] ${retargeted.length} clips retargeted (+ rest_idle)`);
+            initClips(retargeted);
+          }, e => { console.error('[vrm-viewer] anims parse err:', e); initClips(gltf.animations); });
+        });
+      } else {
+        initClips(gltf.animations);
+      }
+
+      model.traverse(child => {
+        if (faceMesh || !child.isSkinnedMesh || !child.morphTargetDictionary) return;
+        if (Object.keys(child.morphTargetDictionary).length === 0) return;
+        faceMesh = child;
+        Object.keys(child.morphTargetDictionary).forEach(k => { faceState[k] = { cur: 0, tgt: 0 }; });
+        blinkTimer = 2 + Math.random() * 3;
+      });
+
+    }, (err) => {
+      loadEl.textContent = `Parse error: ${err.message || err}`;
+      console.error(err);
+    });
+
+    function updateFace(delta) {
+      if (!faceMesh) return;
+      blinkTimer -= delta;
+      if (blinkPhase === 'wait' && blinkTimer <= 0) {
+        blinkPhase = 'close'; blinkTimer = 0.08;
+        if (faceState.blink_L) faceState.blink_L.tgt = 1;
+        if (faceState.blink_R) faceState.blink_R.tgt = 1;
+      } else if (blinkPhase === 'close' && blinkTimer <= 0) {
+        blinkPhase = 'open'; blinkTimer = 0.10;
+        if (faceState.blink_L) faceState.blink_L.tgt = 0;
+        if (faceState.blink_R) faceState.blink_R.tgt = 0;
+      } else if (blinkPhase === 'open' && blinkTimer <= 0) {
+        blinkPhase = 'wait'; blinkTimer = 3 + Math.random() * 4;
+      }
+      Object.keys(faceState).forEach(k => {
+        const s = faceState[k];
+        const rate = s.tgt > s.cur ? 10 : 4;
+        s.cur += (s.tgt - s.cur) * Math.min(1, delta * rate);
+        const idx = faceMesh.morphTargetDictionary[k];
+        if (idx !== undefined) faceMesh.morphTargetInfluences[idx] = s.cur;
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      clock.update();
+      const delta = clock.getDelta();
+      t += delta;
+      if (mixer) mixer.update(delta);
+      if (window.nyxiaVRM) window.nyxiaVRM.update(delta);
+
+      const _ac = window._animCtrl.action;
+      if (_ac && !_ac.paused) {
+        scrubSlider.value = _ac.time;
+        animTimeEl.textContent = `${fmtTime(_ac.time)} / ${fmtTime(_ac.getClip().duration)}`;
+      }
+
+      if (model) {
+        const floatY = Math.sin(t * 1.2) * 0.09;
+        model.position.y = modelBaseY + floatY;
+        // Yaw slider spins the avatar itself left/right in place.
+        model.rotation.y = orbit.yaw;
+
+        if (neckBone) {
+          neckBone.rotation.y +=  mouseNX * 0.18;
+          neckBone.rotation.x += -mouseNY * 0.10;
+        }
+        if (headBone) {
+          headBone.rotation.y +=  mouseNX * 0.28;
+          headBone.rotation.x += -mouseNY * 0.18;
+        }
+      }
+
+      // Up/Down slider orbits the camera vertically around the avatar
+      // (polar angle) — it never translates camera height like an elevator.
+      if (window._camBase) {
+        const cb = window._camBase;
+        const driftX = Math.sin(t * 0.25) * 0.018 + mouseNX * 0.045;
+        const driftY = Math.sin(t * 0.18) * 0.012 - mouseNY * 0.025;
+        const target = new THREE.Vector3(driftX * 0.3, cb.lookY, 0);
+
+        const basePos = new THREE.Vector3(cb.x + driftX, cb.y + driftY, cb.z);
+        const offset = basePos.clone().sub(target);
+        const spherical = new THREE.Spherical().setFromVector3(offset);
+        spherical.phi = THREE.MathUtils.clamp(spherical.phi - orbit.pitch, 0.25, Math.PI - 0.25);
+        offset.setFromSpherical(spherical);
+
+        const desired = target.clone().add(offset);
+        camera.position.lerp(desired, 0.06);
+        camera.lookAt(target);
+      }
+
+      updateFace(delta);
+      composer.render();
+    }
+    animate();
+
+  } catch(e) {
+    loadEl.textContent = `Init error: ${e.message || e}`;
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>

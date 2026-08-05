@@ -29,9 +29,53 @@ const PROVIDER_DEFAULTS = {
     family:   'openai', // Gemini uses OpenAI-compatible endpoint
   },
   local: {
-    model:    'qwen3:8b',
+    model:    'nyxia-ft',
     hostname: '127.0.0.1',
     path:     '/v1/chat/completions',
+    family:   'openai',
+  },
+  // claude-bridge OAuth proxy — no API key needed, reads ~/.claude/.credentials.json
+  bridge: {
+    model:    'claude-sonnet-4-6',
+    hostname: '127.0.0.1',
+    port:     3456,
+    path:     '/v1/messages',
+    family:   'anthropic',
+    secure:   false,
+  },
+  // vLLM ROCm — main PC (RX 9070 XT, 16GB VRAM)
+  // Setup: pip install vllm --extra-index-url https://download.pytorch.org/whl/rocm6.2 --user
+  // Run:   python -m vllm.entrypoints.openai.api_server \
+  //          --model <path-or-hf-id> --enable-prefix-caching \
+  //          --kv-cache-dtype fp8 --gpu-memory-utilization 0.88 --port 8100
+  // One text brain (nyxia-ft) on 8100; Vision (qwen2.5vl) on 8102. Single text model
+  // by design — heart/logic are the same finetune, not separate sector models.
+  'vllm-text': {
+    model:    'nyxia-ft',
+    hostname: '127.0.0.1',
+    path:     '/v1/chat/completions',
+    port:     8100,
+    family:   'openai',
+  },
+  'vllm-vision': {
+    model:    'Qwen/Qwen2.5-VL-7B-Instruct',
+    hostname: '127.0.0.1',
+    path:     '/v1/chat/completions',
+    port:     8102,
+    family:   'openai',
+  },
+  // llama.cpp Vulkan backend — main PC (RX 9070 XT, 16GB VRAM), built 2026-07-24
+  // (RDNA4 gfx1201, Vulkan not ROCm — ROCm's rocblas has no gfx1201 kernels yet).
+  // Setup: ~/llama.cpp/build/bin/llama-server -m <gguf-path> -ngl 99 \
+  //          --n-cpu-moe <N> --port 8090
+  // Model: Qwen3-30B-A3B (MoE, 3B active) — fits fully in 16GB VRAM at Q4,
+  // real measured ~145 tok/s on this VRAM class. See
+  // ~/claude-projects/neuro-ai-research/research/phase2/ for the sizing research.
+  'llamacpp-local': {
+    model:    'nyxia-30b',
+    hostname: '127.0.0.1',
+    path:     '/v1/chat/completions',
+    port:     8090,
     family:   'openai',
   },
 };
@@ -51,6 +95,7 @@ function getProviderConfig(cfg) {
   const model    = cfg?.llm?.model    || base.model;
   const hostname = cfg?.llm?.hostname || base.hostname;
   const pathStr  = cfg?.llm?.path     || base.path;
+  const port     = cfg?.llm?.port     || base.port || null; // null = use default (443/80)
   const family   = base.family;
 
   // Resolve API key: use explicit apiKey field, or fall back to known key slots
@@ -62,19 +107,29 @@ function getProviderConfig(cfg) {
     else if (provider === 'local')   apiKey = 'ollama';
   }
 
-  return { provider, model, hostname, path: pathStr, family, apiKey };
+  // No API key for Anthropic → fall back to claude-bridge OAuth proxy
+  let secure = base.secure !== false;
+  let resolvedPort = port;
+  if (provider === 'anthropic' && !apiKey) {
+    const bridge = PROVIDER_DEFAULTS.bridge;
+    return { provider: 'bridge', model, hostname: bridge.hostname, path: bridge.path,
+             port: bridge.port, family: bridge.family, apiKey: '', secure: false };
+  }
+
+  return { provider, model, hostname, path: pathStr, port: resolvedPort, family, apiKey, secure };
 }
 
 /**
  * Build Anthropic-style request headers.
  */
 function anthropicHeaders(apiKey, bodyLength) {
-  return {
+  const h = {
     'Content-Type':        'application/json',
-    'x-api-key':           apiKey,
     'anthropic-version':   '2023-06-01',
     'Content-Length':      bodyLength,
   };
+  if (apiKey) h['x-api-key'] = apiKey;
+  return h;
 }
 
 /**

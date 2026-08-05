@@ -1,0 +1,7 @@
+# Training data / model weights — not code knowledge
+training_data/
+training-data/
+Finetuned_Nyxia_qwen/
+nyxia-merged/
+voicetrainer/
+unsloth_compiled_cache/

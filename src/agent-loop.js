@@ -1,12 +1,12 @@
 // agent-loop.js — Phase 10.1: Ollama-native tool use agent loop
-// Uses qwen3:8b with Ollama /api/chat tools array.
+// Uses nyxia-ft with Ollama /api/chat tools array.
 // Each step: model decides tool → we execute → result fed back → repeat.
 // Max 15 steps. Final answer returned as string.
 
 const http = require('http');
 
 const OLLAMA_URL  = 'http://127.0.0.1:11434';
-const AGENT_MODEL = 'qwen3:8b';
+const AGENT_MODEL = 'nyxia-ft';
 const MAX_STEPS   = 15;
 
 // ── Tool schemas (OpenAI-compatible format) ───────────────────────────────────
