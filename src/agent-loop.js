@@ -133,11 +133,12 @@ const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'open_file',
-      description: 'Open a file or folder in VS Code so Kristian can see it on his screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
+      description: 'Open a file or folder on Kristian\'s screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Absolute path to the file or folder to open' }
+          path: { type: 'string', description: 'Absolute path to the file or folder to open' },
+          app: { type: 'string', enum: ['vscode', 'dolphin', 'kate'], description: 'Which app to open it in — dolphin for folders/browsing, kate for a quick text read, vscode (default) for code/project files' }
         },
         required: ['path']
       }
@@ -175,10 +176,10 @@ const TOOL_SCHEMAS = [
 
 // ── Ollama /api/chat call ─────────────────────────────────────────────────────
 
-function ollamaChat(messages, tools) {
+function ollamaChat(messages, tools, model = AGENT_MODEL) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
-      model:   AGENT_MODEL,
+      model,
       messages,
       tools,
       stream:  false,
@@ -229,7 +230,7 @@ async function executeTool(name, args, deps) {
       case 'desktop_action':
         return await deps.desktopExecute(args.instruction);
       case 'open_file':
-        return await deps.bridgeOpenFile(args.path);
+        return await deps.bridgeOpenFile(args.path, args.app);
       case 'bridge_read_file':
         return await deps.bridgeReadFile(args.path);
       case 'bridge_list_files':
@@ -250,9 +251,10 @@ async function executeTool(name, args, deps) {
  * @param {string}   goal    - Task description
  * @param {object}   deps    - Tool implementations injected from main.js
  * @param {function} onStep  - Optional callback(step, toolName, resultPreview)
+ * @param {string}   model   - Optional Ollama model override (default: AGENT_MODEL)
  * @returns {Promise<string>} - Final answer text
  */
-async function runAgentLoop(goal, deps, onStep = null) {
+async function runAgentLoop(goal, deps, onStep = null, model = AGENT_MODEL) {
   const messages = [
     {
       role: 'system',
@@ -267,7 +269,7 @@ async function runAgentLoop(goal, deps, onStep = null) {
   for (let step = 0; step < MAX_STEPS; step++) {
     let response;
     try {
-      response = await ollamaChat(messages, TOOL_SCHEMAS);
+      response = await ollamaChat(messages, TOOL_SCHEMAS, model);
     } catch (e) {
       return `Agent error at step ${step + 1}: ${e.message}`;
     }

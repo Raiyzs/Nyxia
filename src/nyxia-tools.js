@@ -84,11 +84,12 @@ const NYXIA_TOOLS = [
   // ── Harness-scoped tools (claude-bridge, via bridge-client.js) ────────────
   {
     name: 'open_file',
-    description: 'Open a file or folder in VS Code so Kristian can see it on his screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
+    description: 'Open a file or folder on Kristian\'s screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
     input_schema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Absolute path to the file or folder to open' }
+        path: { type: 'string', description: 'Absolute path to the file or folder to open' },
+        app: { type: 'string', enum: ['vscode', 'dolphin', 'kate'], description: 'Which app to open it in — dolphin for folders/browsing, kate for a quick text read, vscode (default) for code/project files' }
       },
       required: ['path']
     }
@@ -191,7 +192,7 @@ async function runTool(name, input, deps) {
       case 'browser_action':
         return await deps.browserExecute(input.instruction);
       case 'open_file':
-        return await deps.bridgeOpenFile(input.path);
+        return await deps.bridgeOpenFile(input.path, input.app);
       case 'bridge_read_file':
         return await deps.bridgeReadFile(input.path);
       case 'bridge_list_files':

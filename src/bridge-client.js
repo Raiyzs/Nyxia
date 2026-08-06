@@ -54,8 +54,8 @@ function bridgeListFiles(path, token, depth) {
   return _bridgeCall('list_files', { path, depth }, token);
 }
 
-function bridgeOpenFile(path, token) {
-  return _bridgeCall('open_in_vscode', { path }, token);
+function bridgeOpenFile(path, token, app) {
+  return _bridgeCall('open_in_vscode', app ? { path, app } : { path }, token);
 }
 
 module.exports = { bridgeReadFile, bridgeListFiles, bridgeOpenFile };

@@ -1371,7 +1371,7 @@ const classifyMessage    = router.classifyMessage;
 // ── Harness-scoped tools → src/bridge-client.js + claude-bridge POST /mcp ────
 // Token is re-read from config on every call (not captured once at startup),
 // consistent with how getProviderConfig(loadConfig()) is read fresh elsewhere.
-const bridgeOpenFile  = path => bridgeClient.bridgeOpenFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
+const bridgeOpenFile  = (path, app) => bridgeClient.bridgeOpenFile(path, loadConfig()?.keys?.bridgeTokenNyxia, app);
 const bridgeReadFile  = path => bridgeClient.bridgeReadFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
 const bridgeListFiles = path => bridgeClient.bridgeListFiles(path, loadConfig()?.keys?.bridgeTokenNyxia);
 
