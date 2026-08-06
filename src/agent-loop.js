@@ -2,177 +2,38 @@
 // Uses nyxia-ft with Ollama /api/chat tools array.
 // Each step: model decides tool → we execute → result fed back → repeat.
 // Max 15 steps. Final answer returned as string.
+//
+// Shared tool metadata (WORLD tools — shell, search, web, filesystem, browser,
+// harness-scoped bridge tools) now lives in tool-schemas.js as one
+// format-agnostic source, converted here via toOllamaFormat(). Only
+// desktop_action — not meaningful for nyxia-tools.js's Claude-backed brain —
+// stays defined in this file. Add a tool both brains should have to
+// tool-schemas.js; add an agent-loop-only tool below.
 
 const http = require('http');
+const { SHARED_TOOLS, toOllamaFormat } = require('./tool-schemas');
 
 const OLLAMA_URL  = 'http://127.0.0.1:11434';
 const AGENT_MODEL = 'nyxia-ft';
 const MAX_STEPS   = 15;
 
-// ── Tool schemas (OpenAI-compatible format) ───────────────────────────────────
+// ── Agent-loop-only tool definitions (Ollama format via toOllamaFormat) ────────
 
-const TOOL_SCHEMAS = [
+const AGENT_ONLY_TOOLS = [
   {
-    type: 'function',
-    function: {
-      name: 'shell',
-      description: 'Run a shell command on the local machine. Sandboxed to /var/home/kvoldnes. Returns stdout, stderr, exit code.',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: 'Shell command to execute' }
-        },
-        required: ['command']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: 'Search the web via SearXNG. Use this FIRST for information lookup — faster than browser. Returns top 3 results with title, snippet, and URL.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search query' }
-        },
-        required: ['query']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'fetch_page',
-      description: 'Fetch and extract text content from a URL.',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: 'Full URL to fetch' }
-        },
-        required: ['url']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'fs_list',
-      description: 'List files and directories at a path. Limited to Documents, Desktop, nyxia, and claude-projects — same restriction as bridge_list_files, not a broader-access alternative.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to list' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'fs_read',
-      description: 'Read a file. Returns up to 3000 chars. Limited to Documents, Desktop, nyxia, and claude-projects — same restriction as bridge_read_file, not a broader-access alternative.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to file' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'fs_write',
-      description: 'Write content to a file under /var/home/kvoldnes.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path:    { type: 'string', description: 'Absolute path to file' },
-          content: { type: 'string', description: 'Content to write' }
-        },
-        required: ['path', 'content']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'browser_action',
-      description: 'Control a real browser: navigate to URL, click elements, type, read page content. Use only when web_search is insufficient or you need to interact with a logged-in site.',
-      parameters: {
-        type: 'object',
-        properties: {
-          instruction: { type: 'string', description: 'Natural language browser instruction' }
-        },
-        required: ['instruction']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'desktop_action',
-      description: 'Control the desktop: launch apps, click UI elements, type in windows, list running apps.',
-      parameters: {
-        type: 'object',
-        properties: {
-          instruction: { type: 'string', description: 'Natural language desktop instruction' }
-        },
-        required: ['instruction']
-      }
-    }
-  },
-  // ── Harness-scoped tools (claude-bridge, via bridge-client.js) ─────────────
-  // Narrower than fs_read/fs_list (limited to Documents/Desktop/nyxia/
-  // claude-projects, checked by claude-bridge itself, not just local sandbox
-  // convention) and the only way to actually put a file on Kristian's screen.
-  {
-    type: 'function',
-    function: {
-      name: 'open_file',
-      description: 'Open a file or folder on Kristian\'s screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to the file or folder to open' },
-          app: { type: 'string', enum: ['vscode', 'dolphin', 'kate'], description: 'Which app to open it in — dolphin for folders/browsing, kate for a quick text read, vscode (default) for code/project files' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'bridge_read_file',
-      description: 'Read a file — limited to paths inside Documents, Desktop, nyxia, or claude-projects. fs_read has the identical restriction now; it is not a fallback for out-of-scope paths.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to the file' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'bridge_list_files',
-      description: 'List a directory — limited to paths inside Documents, Desktop, nyxia, or claude-projects. fs_list has the identical restriction now; it is not a fallback for out-of-scope paths.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Absolute path to the directory' }
-        },
-        required: ['path']
-      }
+    name: 'desktop_action',
+    description: 'Control the desktop: launch apps, click UI elements, type in windows, list running apps.',
+    parameters: {
+      type: 'object',
+      properties: {
+        instruction: { type: 'string', description: 'Natural language desktop instruction' }
+      },
+      required: ['instruction']
     }
   }
 ];
+
+const TOOL_SCHEMAS = [...toOllamaFormat(SHARED_TOOLS), ...toOllamaFormat(AGENT_ONLY_TOOLS)];
 
 // ── Ollama /api/chat call ─────────────────────────────────────────────────────
 
