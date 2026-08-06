@@ -58,7 +58,7 @@ const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'fs_list',
-      description: 'List files and directories at a path under /var/home/kvoldnes.',
+      description: 'List files and directories at a path. Limited to Documents, Desktop, nyxia, and claude-projects — same restriction as bridge_list_files, not a broader-access alternative.',
       parameters: {
         type: 'object',
         properties: {
@@ -72,7 +72,7 @@ const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'fs_read',
-      description: 'Read a file under /var/home/kvoldnes. Returns up to 3000 chars.',
+      description: 'Read a file. Returns up to 3000 chars. Limited to Documents, Desktop, nyxia, and claude-projects — same restriction as bridge_read_file, not a broader-access alternative.',
       parameters: {
         type: 'object',
         properties: {
@@ -148,7 +148,7 @@ const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'bridge_read_file',
-      description: 'Read a file through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_read instead.',
+      description: 'Read a file — limited to paths inside Documents, Desktop, nyxia, or claude-projects. fs_read has the identical restriction now; it is not a fallback for out-of-scope paths.',
       parameters: {
         type: 'object',
         properties: {
@@ -162,7 +162,7 @@ const TOOL_SCHEMAS = [
     type: 'function',
     function: {
       name: 'bridge_list_files',
-      description: 'List a directory through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_list instead.',
+      description: 'List a directory — limited to paths inside Documents, Desktop, nyxia, or claude-projects. fs_list has the identical restriction now; it is not a fallback for out-of-scope paths.',
       parameters: {
         type: 'object',
         properties: {
@@ -220,9 +220,9 @@ async function executeTool(name, args, deps) {
       case 'fetch_page':
         return (await deps.fetchPage(args.url)) || 'Failed to fetch page.';
       case 'fs_list':
-        return deps.fsListDir(args.path);
+        return await deps.fsListDir(args.path);
       case 'fs_read':
-        return deps.fsReadFile(args.path);
+        return await deps.fsReadFile(args.path);
       case 'fs_write':
         return deps.fsWriteFile(args.path, args.content);
       case 'browser_action':

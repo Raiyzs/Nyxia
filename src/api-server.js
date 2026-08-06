@@ -248,9 +248,9 @@ function startApiServer(port, deps) {
                   fsWriteFile(fpath, contentMatch ? contentMatch[1] : '');
                   fsResult = `File created at ${fpath}`;
                 } else if (readMatch) {
-                  fsResult = fsReadFile(fpath);
+                  fsResult = await fsReadFile(fpath);
                 } else {
-                  fsResult = fsListDir(fpath);
+                  fsResult = await fsListDir(fpath);
                 }
               }
               if (fsResult) enrichedPrompt = systemPrompt + `\n\n---\nFilesystem result:\n${fsResult}\n\nRespond as Nyxia.\n---`;

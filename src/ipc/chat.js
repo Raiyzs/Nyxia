@@ -191,7 +191,7 @@ module.exports = function registerChatIPC(ipcMain, deps) {
           const contentMatch = lastUserMsg.match(/(?:content|containing):\s*[`"']?(.+)/is);
           fsResult = fsWriteFile(p, contentMatch ? contentMatch[1].trim() : '');
         } else {
-          fsResult = `Contents of ${p}:\n` + fsReadFile(p);
+          fsResult = `Contents of ${p}:\n` + (await fsReadFile(p));
         }
       } catch (e) { fsResult = `Filesystem error: ${e.message}`; }
       enrichedPrompt = systemPrompt + `\n\n---\nFilesystem result:\n${fsResult}\n---`;

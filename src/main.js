@@ -31,7 +31,7 @@ const contextLayer      = require('./context-layer');
 const sharedExperience  = require('./shared-experience');
 const { loadConfig, saveConfig, loadPersonality, savePersonality, loadSelf, saveSelf, loadUserProfile, saveUserProfile, getPrivacy, appendAudit } = require('./config-manager');
 const { ensureChroma, ensureOllama, ensureReflex, waitForVram, killChroma, killOllama, killReflex, isOllamaSpawned } = require('./service-startup');
-const { SEARXNG_URL, querySearch, extractUrl, fetchPage, fsResolvePath, fsSanitize, fsListDir, fsReadFile, fsWriteFile } = require('./tools');
+const { SEARXNG_URL, querySearch, extractUrl, fetchPage, fsResolvePath, fsSanitize, fsWriteFile } = require('./tools');
 const { splitSseLines, flushTtsSentence, finishStream } = require('./ipc/streaming');
 const { startClaudeWatcher } = require('./claude-watcher');
 const krixMemory    = require('./krix-memory');
@@ -1374,6 +1374,13 @@ const classifyMessage    = router.classifyMessage;
 const bridgeOpenFile  = (path, app) => bridgeClient.bridgeOpenFile(path, loadConfig()?.keys?.bridgeTokenNyxia, app);
 const bridgeReadFile  = path => bridgeClient.bridgeReadFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
 const bridgeListFiles = path => bridgeClient.bridgeListFiles(path, loadConfig()?.keys?.bridgeTokenNyxia);
+
+// fs_read/fs_list now go through the same scoped /mcp check as bridge_read_file/
+// bridge_list_files, closing the bypass where a rejected bridge_read_file call
+// fell back to an unrestricted local read. fs_write is untouched — not in
+// Nyxia's declared tool_scope, tracked separately in AGENT_TOOL_SCOPE.md.
+const fsReadFile = path => bridgeClient.bridgeReadFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
+const fsListDir  = path => bridgeClient.bridgeListFiles(path, loadConfig()?.keys?.bridgeTokenNyxia);
 
 // Streaming guard — read by awareness-loop to prevent interrupting active responses
 let _isStreaming = false;

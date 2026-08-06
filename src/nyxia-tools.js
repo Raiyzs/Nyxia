@@ -49,7 +49,7 @@ const NYXIA_TOOLS = [
   },
   {
     name: 'fs_read',
-    description: 'Read a file on the local filesystem. Returns up to 3000 characters.',
+    description: 'Read a file. Returns up to 3000 characters. Limited to Documents, Desktop, nyxia, and claude-projects — same restriction as bridge_read_file, not a broader-access alternative.',
     input_schema: {
       type: 'object',
       properties: {
@@ -72,7 +72,7 @@ const NYXIA_TOOLS = [
   },
   {
     name: 'fs_list',
-    description: 'List files and directories at a path.',
+    description: 'List files and directories at a path. Limited to Documents, Desktop, nyxia, and claude-projects — same restriction as bridge_list_files, not a broader-access alternative.',
     input_schema: {
       type: 'object',
       properties: {
@@ -96,7 +96,7 @@ const NYXIA_TOOLS = [
   },
   {
     name: 'bridge_read_file',
-    description: 'Read a file through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_read instead.',
+    description: 'Read a file — limited to paths inside Documents, Desktop, nyxia, or claude-projects. fs_read has the identical restriction now; it is not a fallback for out-of-scope paths.',
     input_schema: {
       type: 'object',
       properties: {
@@ -107,7 +107,7 @@ const NYXIA_TOOLS = [
   },
   {
     name: 'bridge_list_files',
-    description: 'List a directory through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_list instead.',
+    description: 'List a directory — limited to paths inside Documents, Desktop, nyxia, or claude-projects. fs_list has the identical restriction now; it is not a fallback for out-of-scope paths.',
     input_schema: {
       type: 'object',
       properties: {
@@ -184,11 +184,11 @@ async function runTool(name, input, deps) {
       case 'fetch_page':
         return (await deps.fetchPage(input.url)) || 'Failed to fetch page.';
       case 'fs_read':
-        return deps.fsReadFile(input.path);
+        return await deps.fsReadFile(input.path);
       case 'fs_write':
         return deps.fsWriteFile(input.path, input.content);
       case 'fs_list':
-        return deps.fsListDir(input.path);
+        return await deps.fsListDir(input.path);
       case 'browser_action':
         return await deps.browserExecute(input.instruction);
       case 'open_file':
