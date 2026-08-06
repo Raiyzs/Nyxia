@@ -23,6 +23,7 @@ const { desktopExecute } = require('./desktop');
 const { executeShell, formatResult } = require('./shell');
 const { runAgentLoop, runCodingLoop } = require('./agent-loop');
 const { NYXIA_TOOLS, runTool } = require('./nyxia-tools');
+const bridgeClient = require('./bridge-client');
 const { startApiServer, stopApiServer, broadcastSSE } = require('./api-server');
 const { queryOllama, parseJsonObject } = require('./utils/ollama-client');
 const ollamaScheduler = require('./utils/ollama-scheduler');
@@ -1151,6 +1152,7 @@ async function streamAnthropicAgentic(event, messages, systemPrompt, claudeKey, 
     querySearch, fetchPage,
     fsListDir, fsReadFile, fsWriteFile,
     browserExecute,
+    bridgeOpenFile, bridgeReadFile, bridgeListFiles,
     setMood: (state, intensity = 0.8) => {
       updateMoodFromEmotion(state);
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1366,6 +1368,13 @@ const queryCouncilMember = providers.queryCouncilMember;
 const getProviderConfig  = providers.getProviderConfig;
 const classifyMessage    = router.classifyMessage;
 
+// ── Harness-scoped tools → src/bridge-client.js + claude-bridge POST /mcp ────
+// Token is re-read from config on every call (not captured once at startup),
+// consistent with how getProviderConfig(loadConfig()) is read fresh elsewhere.
+const bridgeOpenFile  = path => bridgeClient.bridgeOpenFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
+const bridgeReadFile  = path => bridgeClient.bridgeReadFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
+const bridgeListFiles = path => bridgeClient.bridgeListFiles(path, loadConfig()?.keys?.bridgeTokenNyxia);
+
 // Streaming guard — read by awareness-loop to prevent interrupting active responses
 let _isStreaming = false;
 let _lastUserTyped = 0;
@@ -1391,6 +1400,8 @@ require('./ipc/chat')(ipcMain, {
   querySearch, fetchPage, extractUrl,
   fsResolvePath, fsListDir, fsReadFile, fsWriteFile,
   browserExecute, desktopExecute, browserLoad,
+  // harness-scoped tools (claude-bridge)
+  bridgeOpenFile, bridgeReadFile, bridgeListFiles,
   // services / TTS state
   ensureOllama,
   ensureQwen3: () => ttsServers.ensureQwen3(),

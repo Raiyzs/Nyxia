@@ -30,6 +30,8 @@ module.exports = function registerChatIPC(ipcMain, deps) {
     querySearch, fetchPage, extractUrl,
     fsResolvePath, fsListDir, fsReadFile, fsWriteFile,
     browserExecute, desktopExecute, browserLoad,
+    // harness-scoped tools (claude-bridge)
+    bridgeOpenFile, bridgeReadFile, bridgeListFiles,
     // services / TTS state
     ensureOllama, ensureQwen3,
     getQwen3Proc, setQwen3Proc,
@@ -148,7 +150,8 @@ module.exports = function registerChatIPC(ipcMain, deps) {
       try {
         agentResult = await runAgentLoop(lastUserMsg, {
           executeShell, formatResult, querySearch, fetchPage,
-          fsListDir, fsReadFile, fsWriteFile, browserExecute, desktopExecute
+          fsListDir, fsReadFile, fsWriteFile, browserExecute, desktopExecute,
+          bridgeOpenFile, bridgeReadFile, bridgeListFiles
         }, (step, tool, preview) => { console.log(`[agent] step ${step} ${tool}: ${preview.slice(0, 80)}`); });
       } catch (e) { agentResult = `Agent loop failed: ${e.message}`; }
       enrichedPrompt = systemPrompt + `\n\n---\nYour autonomous agent result:\n\n${agentResult}\n---`;
@@ -159,7 +162,8 @@ module.exports = function registerChatIPC(ipcMain, deps) {
       try {
         codeResult = await runCodingLoop(lastUserMsg, {
           executeShell, formatResult, querySearch, fetchPage,
-          fsListDir, fsReadFile, fsWriteFile, browserExecute, desktopExecute
+          fsListDir, fsReadFile, fsWriteFile, browserExecute, desktopExecute,
+          bridgeOpenFile, bridgeReadFile, bridgeListFiles
         }, (step, tool, preview) => { console.log(`[coding] step ${step} ${tool}: ${preview.slice(0, 80)}`); });
       } catch (e) { codeResult = `Coding agent failed: ${e.message}`; }
       enrichedPrompt = systemPrompt + `\n\n---\nCoding agent result:\n${codeResult}\n---`;

@@ -124,6 +124,52 @@ const TOOL_SCHEMAS = [
         required: ['instruction']
       }
     }
+  },
+  // ── Harness-scoped tools (claude-bridge, via bridge-client.js) ─────────────
+  // Narrower than fs_read/fs_list (limited to Documents/Desktop/nyxia/
+  // claude-projects, checked by claude-bridge itself, not just local sandbox
+  // convention) and the only way to actually put a file on Kristian's screen.
+  {
+    type: 'function',
+    function: {
+      name: 'open_file',
+      description: 'Open a file or folder in VS Code so Kristian can see it on his screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file or folder to open' }
+        },
+        required: ['path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bridge_read_file',
+      description: 'Read a file through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_read instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the file' }
+        },
+        required: ['path']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bridge_list_files',
+      description: 'List a directory through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_list instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the directory' }
+        },
+        required: ['path']
+      }
+    }
   }
 ];
 
@@ -182,6 +228,12 @@ async function executeTool(name, args, deps) {
         return await deps.browserExecute(args.instruction);
       case 'desktop_action':
         return await deps.desktopExecute(args.instruction);
+      case 'open_file':
+        return await deps.bridgeOpenFile(args.path);
+      case 'bridge_read_file':
+        return await deps.bridgeReadFile(args.path);
+      case 'bridge_list_files':
+        return await deps.bridgeListFiles(args.path);
       default:
         return `Unknown tool: ${name}`;
     }

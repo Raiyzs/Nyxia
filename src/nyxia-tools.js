@@ -81,6 +81,40 @@ const NYXIA_TOOLS = [
       required: ['path']
     }
   },
+  // ── Harness-scoped tools (claude-bridge, via bridge-client.js) ────────────
+  {
+    name: 'open_file',
+    description: 'Open a file or folder in VS Code so Kristian can see it on his screen — use this for "open the report", "show me that file", etc. Only works for paths inside Documents, Desktop, nyxia, or claude-projects.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file or folder to open' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'bridge_read_file',
+    description: 'Read a file through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_read instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'bridge_list_files',
+    description: 'List a directory through the scoped harness bridge — only for paths inside Documents, Desktop, nyxia, or claude-projects. For anything else under /var/home/kvoldnes, use fs_list instead.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the directory' }
+      },
+      required: ['path']
+    }
+  },
   {
     name: 'browser_action',
     description: 'Control the browser: navigate to a URL, click elements, type, read page. Use only when web_search is not enough or you need to interact with a logged-in site.',
@@ -156,6 +190,12 @@ async function runTool(name, input, deps) {
         return deps.fsListDir(input.path);
       case 'browser_action':
         return await deps.browserExecute(input.instruction);
+      case 'open_file':
+        return await deps.bridgeOpenFile(input.path);
+      case 'bridge_read_file':
+        return await deps.bridgeReadFile(input.path);
+      case 'bridge_list_files':
+        return await deps.bridgeListFiles(input.path);
       case 'set_mood':
         deps.setMood(input.state, input.intensity ?? 0.8);
         return `Mood set to ${input.state}.`;
