@@ -47,7 +47,13 @@ async def startup():
     os.makedirs(SAMPLES_DIR, exist_ok=True)
     from kokoro import KPipeline
     print("[kokoro] loading model...", flush=True)
-    pipeline = KPipeline(lang_code='a')
+    # Explicit CPU: KPipeline defaults to 'cuda' whenever torch.cuda.is_available()
+    # is True, which it is here via ROCm/HIP — but rocBLAS/MIOpen ship no tuned
+    # kernels for this RX 9070 XT's arch (gfx1201, RDNA4) yet, so GPU inference
+    # still runs (100% GPU util) through slow untuned fallback kernels: 5-7s per
+    # sentence. CPU is what this 82M-param model was actually built for: 0.27s
+    # warm. Same rocBLAS gap nyxia's LLM adapter already routes around via Vulkan.
+    pipeline = KPipeline(lang_code='a', device='cpu')
     print("[kokoro] ready", flush=True)
 
 @app.post("/tts")
