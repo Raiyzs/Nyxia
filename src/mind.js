@@ -639,6 +639,40 @@ Return ONLY the single thought, no quotes, no preamble.`;
   }
 
   /** Run a vision cycle — capture screen and describe via qwen2.5vl:7b. Skips if busy or screen unchanged. */
+  _deltaCheck(buf) {
+    const N = 500;
+    const step = Math.max(1, Math.floor(buf.length / N));
+    const samples = Array.from({ length: N }, (_, i) => buf[Math.min(i * step, buf.length - 1)]);
+    let delta = 1.0;
+    if (this._lastScreenSamples?.length === N) {
+      delta = samples.reduce((sum, v, i) => sum + Math.abs(v - this._lastScreenSamples[i]), 0) / (N * 255);
+    }
+    this._lastScreenSamples = samples;
+    return delta;
+  }
+
+  _formVisionHypothesis() {
+    const parts = [];
+    if (this._lastWindow) parts.push(this._lastWindow.toLowerCase());
+    if (this._contextStr) parts.push(this._contextStr.toLowerCase());
+    if (this._lastScreenDesc) parts.push(this._lastScreenDesc.toLowerCase());
+    return parts.join(' ');
+  }
+
+  // Phase 20.2 — compare hypothesis vs actual; mismatch → curiosity gap
+  _checkCuriosityGap(hypothesis, desc) {
+    if (!(hypothesis.length > 10 && this._addGap)) return;
+    const _words = s => new Set(s.toLowerCase().match(/\b\w{4,}\b/g) || []);
+    const hyp = _words(hypothesis);
+    const act = _words(desc);
+    const overlap = [...act].filter(w => hyp.has(w)).length;
+    const overlap_r = act.size > 0 ? overlap / act.size : 1;
+    if (overlap_r < 0.25 && act.size > 3) {
+      // What VL sees is meaningfully different from what we expected
+      this._addGap(`You expected something different — the screen shows: "${desc.slice(0, 120)}". Why might this have changed?`, 'screen_surprise', 0.5);
+    }
+  }
+
   async _updateVision() {
     if (!this._getPrivacy().vision) return; // 14.18 — was screenpipe (old Screenpipe integration key)
     if (this._visionBusy) return;
@@ -648,18 +682,6 @@ Return ONLY the single thought, no quotes, no preamble.`;
 
       // Capture screenshot — use spectacle for KDE/Bazzite to avoid PipeWire portal pop-ups
       const isKDE = (process.env.XDG_CURRENT_DESKTOP || '').toLowerCase().includes('kde');
-      const N = 500;
-
-      const _deltaCheck = (buf) => {
-        const step = Math.max(1, Math.floor(buf.length / N));
-        const samples = Array.from({ length: N }, (_, i) => buf[Math.min(i * step, buf.length - 1)]);
-        let delta = 1.0;
-        if (this._lastScreenSamples?.length === N) {
-          delta = samples.reduce((sum, v, i) => sum + Math.abs(v - this._lastScreenSamples[i]), 0) / (N * 255);
-        }
-        this._lastScreenSamples = samples;
-        return delta;
-      };
 
       if (isKDE) {
         // KDE: spectacle -b -n -o captures silently without portal prompts
@@ -670,7 +692,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
             err => err ? reject(err) : resolve()
           );
         });
-        const delta = _deltaCheck(require('fs').readFileSync(tmpPath));
+        const delta = this._deltaCheck(require('fs').readFileSync(tmpPath));
         if (delta < 0.03) {
           this._visionBusy = false;
           return;
@@ -681,7 +703,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
         const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1920, height: 1080 } });
         if (!sources.length) { this._visionBusy = false; return; }
         const png = sources[0].thumbnail.toPNG();
-        const delta = _deltaCheck(png);
+        const delta = this._deltaCheck(png);
         if (delta < 0.03) {
           this._visionBusy = false;
           return;
@@ -690,13 +712,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
       }
 
       // Phase 20.2 — Predictive Vision: form a hypothesis before calling VL
-      const _hypothesis = (() => {
-        const parts = [];
-        if (this._lastWindow) parts.push(this._lastWindow.toLowerCase());
-        if (this._contextStr) parts.push(this._contextStr.toLowerCase());
-        if (this._lastScreenDesc) parts.push(this._lastScreenDesc.toLowerCase());
-        return parts.join(' ');
-      })();
+      const _hypothesis = this._formVisionHypothesis();
 
       const desc = await this.describeScreen(tmpPath);
       if (desc && desc.length > 10) {
@@ -704,18 +720,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
         this._lastScreenDesc = desc;
         this.emit('context-update', this.getContextString());
 
-        // Phase 20.2 — compare hypothesis vs actual; mismatch → curiosity gap
-        if (_hypothesis.length > 10 && this._addGap) {
-          const _words = s => new Set(s.toLowerCase().match(/\b\w{4,}\b/g) || []);
-          const hyp = _words(_hypothesis);
-          const act = _words(desc);
-          const overlap = [...act].filter(w => hyp.has(w)).length;
-          const overlap_r = act.size > 0 ? overlap / act.size : 1;
-          if (overlap_r < 0.25 && act.size > 3) {
-            // What VL sees is meaningfully different from what we expected
-            this._addGap(`You expected something different — the screen shows: "${desc.slice(0, 120)}". Why might this have changed?`, 'screen_surprise', 0.5);
-          }
-        }
+        this._checkCuriosityGap(_hypothesis, desc);
       }
     } catch(e) {
       console.warn('[vision]', e.message);
