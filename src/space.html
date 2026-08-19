@@ -648,6 +648,22 @@ ipcRenderer.invoke('load-history').then(hist => {
 // ── Real syslog events from main process ──────────────────────────────────
 ipcRenderer.on('syslog', (_, line) => { if (typeof addLog === 'function') addLog(line); });
 
+// ── Unprompted speech (heartbeat / curiosity / uncertain-task) ────────────
+// space.html never had this listener — chat.html/combined.html do. Meant
+// nyxia-proactive sends (proactive.js) reached this window's renderer with
+// nothing subscribed to the channel: a silent, error-free dead end.
+ipcRenderer.on('nyxia-proactive', (_, { text, trigger }) => {
+  if (window._nyxChat?.sending) return; // don't interrupt an active send
+  if (!text || text.length < 4) return;
+
+  addMsg('nyxia', text);
+  window._nyxChat.history.push({ role: 'assistant', content: text });
+  ipcRenderer.invoke('save-history', window._nyxChat.history).catch(() => {});
+  addLog('SPEAK · [' + (trigger || 'heartbeat').toUpperCase() + '] ' + text.slice(0, 48).toUpperCase());
+  showBubble(text.slice(0, 80) + (text.length > 80 ? '…' : ''), 6000);
+  if (callMode) speakReply(text);
+});
+
 // Mood polling — updates HUD bars every 5s
 function pollMood() {
   ipcRenderer.invoke('get-mood-state').then(mood => {
