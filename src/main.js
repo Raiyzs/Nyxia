@@ -239,6 +239,7 @@ async function tryResolveUncertainTask(userMsg) {
   proactive.clearPendingUncertainTask();
   const matchText = pending.task.slice(0, 60);
   await krixMemory.resolveFollowup(matchText).catch(() => {});
+  await krixMemory.recordJarvisResolution(pending.task, chosen).catch(() => {});
   const dispatchRes = await krixMemory.dispatchTask(chosen, pending.task).catch(() => null);
   return dispatchRes?.response
     ? `Sending it to ${chosen}. ${dispatchRes.response}`

@@ -200,8 +200,21 @@ async function dispatchTask(agent, task, context = '') {
   return _post('/agent', { agent, task, context });
 }
 
+/**
+ * Record which worker a human assigned an uncertain task to — the write-back
+ * half of Jarvis's routing memory. Call right after resolveFollowup() with
+ * the same `chosen` worker used to dispatch. krix-brain's
+ * scripts/jarvis-rule-miner.py later mines these for recurring
+ * phrasing->worker patterns worth proposing as a new fast-path rule.
+ * @param {string} task     the original task text
+ * @param {string} worker   scout | ava | tom | bobby
+ */
+async function recordJarvisResolution(task, worker) {
+  return _mcpCall('record_jarvis_resolution', { task, worker, resolved_by: 'kristian via nyxia' });
+}
+
 module.exports = {
   writeEntry, searchEntries, searchBrain, writeFile, isAvailable,
-  listUncertainFollowups, resolveFollowup, dispatchTask,
+  listUncertainFollowups, resolveFollowup, dispatchTask, recordJarvisResolution,
   listStalePipelineSignals,
 };
