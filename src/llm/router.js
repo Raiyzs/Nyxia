@@ -2,6 +2,8 @@
 // llm/router.js — message intent classifier.
 // Routes user input to: casual, dialog, council, agent, shell, browser, desktop, filesystem, search, fetch, image.
 
+const { OLLAMA_URL } = require('../config/ollama-endpoint');
+
 let _deps = {};
 
 function init(deps) {
@@ -75,7 +77,7 @@ async function classifyMessage(messages) {
       options: { temperature: 0, num_predict: 20 },
     });
 
-    const res = await fetch('http://127.0.0.1:11434/api/chat', {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,

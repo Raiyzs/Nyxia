@@ -6,6 +6,7 @@ const https = require('https');
 const os = require('os');
 const chokidar = require('chokidar');
 const logger = require('./utils/logger');
+const { OLLAMA_URL } = require('./config/ollama-endpoint');
 const mind        = require('./mind');
 const { fireSector, getSelfBelief, migrateFromSelfJson, setMainWindow } = require('./brain-soul');
 const lanceMemory = require('./lance-memory');
@@ -119,7 +120,7 @@ const extractFactsAsync = facts.extractFactsAsync.bind(facts);
 async function interpretScreen(ocrText) {
   if (!ocrText || ocrText.length < 10) return;
   try {
-    const res = await fetch('http://127.0.0.1:11434/api/chat', {
+    const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -784,7 +785,7 @@ No preamble. Just speak.`;
     // ok = we spawned it, OR it was already running
     let ok = isOllamaSpawned();
     if (!ok) {
-      try { const r = await fetch('http://127.0.0.1:11434/api/version'); ok = r.ok; } catch(_) {}
+      try { const r = await fetch(`${OLLAMA_URL}/api/version`); ok = r.ok; } catch(_) {}
     }
     const model = loadConfig()?.keys?.chatModel || 'qwen2.5vl:7b';
     // Wait for chat window to finish loading before sending

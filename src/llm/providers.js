@@ -4,6 +4,7 @@
 
 const https = require('https');
 const http  = require('http');
+const { OLLAMA_V1_URL } = require('../config/ollama-endpoint');
 
 // Route to base URL + key for each OpenAI-compatible provider
 function getProviderConfig(keys) {
@@ -14,7 +15,7 @@ function getProviderConfig(keys) {
     case 'deepseek': return { baseUrl: 'https://api.deepseek.com/v1',                              apiKey: keys.deepseekKey || '', model: keys.chatModel || 'deepseek-chat' };
     case 'mistral':  return { baseUrl: 'https://api.mistral.ai/v1',                                apiKey: keys.mistralKey  || '', model: keys.chatModel || 'mistral-small-latest' };
     case 'kimi':     return { baseUrl: 'https://api.moonshot.cn/v1',                               apiKey: keys.kimiKey     || '', model: keys.chatModel || 'moonshot-v1-32k' };
-    case 'openai':   return { baseUrl: keys.openaiBase || 'http://127.0.0.1:11434/v1',             apiKey: keys.openaiKey   || '', model: keys.chatModel || 'llama3.2' };
+    case 'openai':   return { baseUrl: keys.openaiBase || OLLAMA_V1_URL,             apiKey: keys.openaiKey   || '', model: keys.chatModel || 'llama3.2' };
     default:         return null; // anthropic — handled by llm/adapter.js
   }
 }

@@ -8,6 +8,7 @@
 const http  = require('http');
 const https = require('https');
 const fs    = require('fs');
+const { OLLAMA_V1_URL } = require('./config/ollama-endpoint');
 const path  = require('path');
 const logger = require('./utils/logger');
 const { browserExecute } = require('./browser');
@@ -140,7 +141,7 @@ async function callLLM(messages, systemPrompt, cfg) {
   const claudeKey = keys.anthropic || '';
 
   if (provider === 'openai' || provider === 'ollama') {
-    const baseUrl = keys.openaiBase || 'http://127.0.0.1:11434/v1';
+    const baseUrl = keys.openaiBase || OLLAMA_V1_URL;
     const model   = keys.chatModel  || 'nyxia:latest';
     return callOpenAI(messages, systemPrompt, baseUrl, keys.openai || '', model);
   }

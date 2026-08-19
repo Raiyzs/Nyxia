@@ -12,8 +12,8 @@
 
 const http = require('http');
 const { SHARED_TOOLS, toOllamaFormat } = require('./tool-schemas');
+const { OLLAMA_URL } = require('./config/ollama-endpoint');
 
-const OLLAMA_URL  = 'http://127.0.0.1:11434';
 const AGENT_MODEL = 'nyxia-ft';
 const MAX_STEPS   = 15;
 

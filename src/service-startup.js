@@ -47,6 +47,10 @@ async function ensureChroma(getUserData) {
 const OLLAMA_BIN = '/usr/local/bin/ollama';
 let ollamaProc = null;
 
+// Deliberately hardcoded to localhost throughout — this function's job is
+// "is a LOCAL Ollama already up, spawn one if not," a genuinely separate
+// concern from where Nyxia's client actually sends its queries
+// (config/ollama-endpoint.js). See the NAS-migration spark on this file.
 async function ensureOllama() {
   try {
     const res = await fetch('http://127.0.0.1:11434/api/version');

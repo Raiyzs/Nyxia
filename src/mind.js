@@ -22,6 +22,7 @@ const { EventEmitter } = require('events');
 const { spawn, exec }  = require('child_process');
 const { clipboard }    = require('electron');
 const visualCortex     = require('./visual-cortex');
+const { OLLAMA_URL, OLLAMA_V1_URL } = require('./config/ollama-endpoint');
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
@@ -531,7 +532,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
    */
   _callModel(cfg, messages, maxTokens) {
     if (cfg.provider === 'openai' || cfg.baseUrl) {
-      const baseUrl = cfg.baseUrl || 'http://127.0.0.1:11434/v1';
+      const baseUrl = cfg.baseUrl || OLLAMA_V1_URL;
       return this._openaiPost(baseUrl, cfg.apiKey || '', cfg.model || 'llama3.2', messages, maxTokens);
     }
     // Anthropic
@@ -619,7 +620,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
     try {
       this._visionBusy = true;
       const b64 = fovJpeg.toString('base64');
-      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -737,7 +738,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
       const fs = require('fs');
       if (!fs.existsSync(tmpPath)) return null;
       const b64 = fs.readFileSync(tmpPath).toString('base64');
-      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -770,7 +771,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
       const prompt = interrupt
         ? `You are Nyxia's visual perception. Describe what you notice in this screen region (${locationHint}) as a brief first-person observation. One sentence, present tense, specific.`
         : `What is happening in this screen region (${locationHint})? One sentence, be specific.`;
-      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+      const res = await fetch(`${OLLAMA_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -859,7 +860,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
     const configs  = {
       gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/', apiKey: keys.geminiKey || '', model: keys.mindModel || 'gemini-2.0-flash-lite' },
       grok:   { baseUrl: 'https://api.x.ai/v1', apiKey: keys.grokKey || '', model: keys.mindModel || 'grok-3-mini' },
-      openai: { baseUrl: keys.openaiBase || 'http://127.0.0.1:11434/v1', apiKey: keys.openaiKey || '', model: keys.mindModel || 'llama3.2' },
+      openai: { baseUrl: keys.openaiBase || OLLAMA_V1_URL, apiKey: keys.openaiKey || '', model: keys.mindModel || 'llama3.2' },
     };
     const pc = configs[provider];
     if (pc) return this._openaiPost(pc.baseUrl, pc.apiKey, pc.model, messages, maxTokens);
