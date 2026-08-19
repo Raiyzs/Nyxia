@@ -272,7 +272,7 @@ const STOPWORDS = new Set([
 function _ollamaQuery(sys, user, maxTokens = 120, timeoutMs = 8000, model, priority = 2) {
   return scheduler.enqueue(
     priority,
-    () => queryOllama(sys, user, { model: model || _getMindModel?.() || 'nyxia-ft', maxTokens, timeoutMs }),
+    () => queryOllama(sys, user, { model: model || 'llama3.2:3b', maxTokens, timeoutMs }),
     '_ollamaQuery'
   );
 }
