@@ -136,6 +136,32 @@ async function isAvailable() {
 // same followups list without a second storage mechanism.
 const UNCERTAIN_QUEUE_TAG = 'jarvis-uncertain';
 
+// downscale's aggregation marker for a recurring/chronic followup (e.g. an
+// n8n trigger that keeps queuing with no confident worker). These are NOT
+// routable jarvis-uncertain tasks — "which worker should take this" doesn't
+// make sense for "this keeps failing the same way" — so they're deliberately
+// kept out of listUncertainFollowups()'s filter, not merged into it.
+const STALE_PIPELINE_MARKER = /<!--\s*agg:/;
+
+/**
+ * List chronic/aggregated followups (downscale's `agg:` marker) — visibility
+ * only, not a routable queue. Read-only, same /followups endpoint as
+ * listUncertainFollowups(), different filter.
+ * @returns {Promise<Array<{date, text}>>}
+ */
+async function listStalePipelineSignals() {
+  try {
+    const res = await fetch(`${KRIX_API}/followups`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return [];
+    const { pending } = await res.json();
+    return (pending || [])
+      .filter(p => STALE_PIPELINE_MARKER.test(p.text || ''))
+      .map(p => ({ date: p.date, text: p.text }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * List pending followups tagged as jarvis-uncertain routing decisions —
  * read-only, via api.py's REST /followups (no MCP round-trip needed for reads).
@@ -177,4 +203,5 @@ async function dispatchTask(agent, task, context = '') {
 module.exports = {
   writeEntry, searchEntries, searchBrain, writeFile, isAvailable,
   listUncertainFollowups, resolveFollowup, dispatchTask,
+  listStalePipelineSignals,
 };

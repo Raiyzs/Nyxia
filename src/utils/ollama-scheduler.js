@@ -20,7 +20,7 @@
  *   // result is null if the item was dropped
  */
 class OllamaScheduler {
-  constructor({ maxDepth = 3 } = {}) {
+  constructor({ maxDepth = 6 } = {}) {
     this._queue    = [];    // { priority, fn, label, resolve, reject }[]
     this._running  = false;
     this._maxDepth = maxDepth;

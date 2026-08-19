@@ -221,6 +221,7 @@ heartbeat.init({
   proactiveSpeak: proactive.proactiveSpeak,
   addGap, tryResolveGap, loadConfig,
   fetchUncertainQueue: krixMemory.listUncertainFollowups,
+  fetchStaleSignals: krixMemory.listStalePipelineSignals,
 });
 
 // Jarvis (krix-brain) queues a task here when it can't confidently classify
