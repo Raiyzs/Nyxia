@@ -1397,7 +1397,7 @@ require('./ipc/chat')(ipcMain, {
   // awareness / sleep
   notifyUserMessage, notifyActivity, notifyConversationTurn,
   // config
-  loadConfig, loadPersonality, loadSelf,
+  loadConfig, saveConfig, loadPersonality, loadSelf,
   // routing / brain
   classifyMessage, getCouncilConfigs, getProviderConfig,
   fireBrain, fireSector,

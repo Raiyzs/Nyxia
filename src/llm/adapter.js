@@ -34,6 +34,19 @@ const PROVIDER_DEFAULTS = {
     path:     '/v1/chat/completions',
     family:   'openai',
   },
+  // Cloud Claude routed through the self-hosted Helix gateway (~/helix) instead
+  // of api.anthropic.com directly — same model, but cached/cost-tracked/rate-
+  // limited under the "nyxia" Helix project. Toggle via the /brain chat command
+  // (see ipc/chat.js) — swaps against 'local' (nyxia-ft), not decided yet which
+  // stays default.
+  helix: {
+    model:    'claude-sonnet-4-6',
+    hostname: '127.0.0.1',
+    port:     8000,
+    path:     '/v1/chat/completions',
+    family:   'openai', // Helix speaks OpenAI-compat in, translates to Anthropic upstream
+    secure:   false,    // plain HTTP gateway on localhost, not real TLS — same as 'bridge'
+  },
   // claude-bridge OAuth proxy — no API key needed, reads ~/.claude/.credentials.json
   bridge: {
     model:    'claude-sonnet-4-6',
@@ -105,6 +118,7 @@ function getProviderConfig(cfg) {
     else if (provider === 'openai' || provider === 'openai-realtime') apiKey = process.env.OPENAI_API_KEY || cfg?.keys?.openai || '';
     else if (provider === 'gemini')  apiKey = process.env.GEMINI_API_KEY || cfg?.keys?.gemini || cfg?.keys?.geminiKey || '';
     else if (provider === 'local')   apiKey = 'ollama';
+    else if (provider === 'helix')   apiKey = cfg?.keys?.helixKey || '';
   }
 
   // No API key for Anthropic → fall back to claude-bridge OAuth proxy

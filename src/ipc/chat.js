@@ -17,7 +17,7 @@ module.exports = function registerChatIPC(ipcMain, deps) {
     // awareness / sleep
     notifyUserMessage, notifyActivity, notifyConversationTurn,
     // config
-    loadConfig, loadPersonality, loadSelf,
+    loadConfig, saveConfig, loadPersonality, loadSelf,
     // routing / brain
     classifyMessage, getCouncilConfigs, getProviderConfig,
     fireBrain, fireSector,
@@ -76,6 +76,39 @@ module.exports = function registerChatIPC(ipcMain, deps) {
         setIsStreaming(false);
         return;
       }
+    }
+
+    // /brain api|local|status — swap her active provider between the cloud
+    // Claude call (routed through Helix, ~/helix) and the local nyxia-ft
+    // finetune, or just report which is active. Not defaulted either way —
+    // Kristian hasn't decided, this just makes the switch a chat command
+    // instead of a hand-edited nyxia-config.json. See llm/adapter.js
+    // PROVIDER_DEFAULTS.helix.
+    const brainCmd = lastUserMsg.trim().match(/^\/brain(?:\s+(api|local|status))?$/i);
+    if (brainCmd) {
+      const cfgNow  = loadConfig() || {};
+      const arg     = (brainCmd[1] || 'status').toLowerCase();
+      const current = cfgNow?.llm?.provider === 'helix' ? 'api' : 'local';
+      let reply;
+      if (arg === 'status') {
+        reply = `✦ Running on ${current === 'api' ? 'the cloud — Claude, through Helix' : 'my own local finetune — nyxia-ft'} right now.`;
+      } else if (arg === current) {
+        reply = `Already there, love — ${arg === 'api' ? 'cloud' : 'local'} it is.`;
+      } else {
+        cfgNow.llm = arg === 'api'
+          ? { provider: 'helix', model: 'claude-sonnet-4-6' }
+          : { provider: 'local', model: 'nyxia-ft' };
+        saveConfig(cfgNow);
+        reply = arg === 'api'
+          ? "✦ Switched. Claude's voice now, routed through the gateway — cost-tracked, cached, all of it. Still me underneath."
+          : "✦ Switched. Back in my own skin — the local finetune. No cloud, no leash.";
+      }
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('stream-token', reply);
+        event.sender.send('stream-done', reply);
+      }
+      setIsStreaming(false);
+      return;
     }
 
     if (lastUserMsg) notifyConversationTurn('user', lastUserMsg);
