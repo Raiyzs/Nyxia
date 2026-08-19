@@ -141,6 +141,20 @@ const SHARED_TOOLS = [
       },
       required: ['path']
     }
+  },
+  // ── KRIX-BRAIN's own MCP daemon (krix-memory.js, port 7425) — separate
+  // channel from claude-bridge above, already trusted for resolveFollowup/
+  // recordJarvisResolution (writes). This is read-only.
+  {
+    name: 'search_brain',
+    description: 'Semantic search over KRIX-BRAIN\'s shared knowledge — episodes, sessions, project notes, code. Use this to recall real project history instead of guessing from your own mood/reflection memory alone.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to search for' }
+      },
+      required: ['query']
+    }
   }
 ];
 

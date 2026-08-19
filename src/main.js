@@ -1412,6 +1412,8 @@ require('./ipc/chat')(ipcMain, {
   browserExecute, desktopExecute, browserLoad,
   // harness-scoped tools (claude-bridge)
   bridgeOpenFile, bridgeReadFile, bridgeListFiles,
+  // krix-brain's own knowledge base (separate channel, read-only)
+  searchBrain: krixMemory.searchBrain,
   // services / TTS state
   ensureOllama,
   ensureQwen3: () => ttsServers.ensureQwen3(),

@@ -88,6 +88,12 @@ async function runTool(name, input, deps) {
         return await deps.bridgeReadFile(input.path);
       case 'bridge_list_files':
         return await deps.bridgeListFiles(input.path);
+      case 'search_brain': {
+        const hits = await deps.searchBrain(input.query);
+        return hits?.length
+          ? hits.map(h => `[${h.path}]\n${h.snippet}`).join('\n\n')
+          : 'No results found.';
+      }
       case 'set_mood':
         deps.setMood(input.state, input.intensity ?? 0.8);
         return `Mood set to ${input.state}.`;

@@ -96,6 +96,12 @@ async function executeTool(name, args, deps) {
         return await deps.bridgeReadFile(args.path);
       case 'bridge_list_files':
         return await deps.bridgeListFiles(args.path);
+      case 'search_brain': {
+        const hits = await deps.searchBrain(args.query);
+        return hits?.length
+          ? hits.map(h => `[${h.path}]\n${h.snippet}`).join('\n\n')
+          : 'No results found.';
+      }
       default:
         return `Unknown tool: ${name}`;
     }
