@@ -5,12 +5,13 @@
  *
  * deps: getters for main.js live state:
  *   getStartupMemory, getSelfModel, getMoodState, getLanceReflections,
- *   getCortexBeliefs, getGraphContext, getScreenInterpretation, getLearnedFacts
+ *   getCortexBeliefs, getGraphContext, getUnifiedMemory, getScreenInterpretation,
+ *   getLearnedFacts
  */
 module.exports = function createPromptBuilder(deps) {
   const {
     getStartupMemory, getSelfModel, getMoodState,
-    getLanceReflections, getCortexBeliefs, getGraphContext,
+    getLanceReflections, getCortexBeliefs, getGraphContext, getUnifiedMemory,
     getScreenInterpretation, getLearnedFacts, getKrixBrainContext,
     getMindState,
     getThoughtBank, getGaps, getBodyState, getRecentEvents,
@@ -150,9 +151,18 @@ Rules:
     return out;
   }
 
-  // Reflections/beliefs (LanceDB, falling back to cortex beliefs) + graph memory connections.
+  // Unified self+knowledge memory — deduped, budget-capped blend of beliefs
+  // (self) with lance/graph/krix (knowledge), via memory-manager.js. Falls back
+  // to the raw lance/cortex-belief list if the unified cache hasn't populated yet
+  // (e.g. first ~15s after startup, before the first refresh cycle completes).
   function buildMemorySection() {
     let out = '';
+
+    const unified = getUnifiedMemory();
+    if (unified) {
+      out += `\n\nWho I am and what I know (self and memory, drawn from experience — let this color how I think and speak, not what I say explicitly):\n${unified}`;
+      return out;
+    }
 
     const lanceReflections = getLanceReflections();
     const cortexBeliefs    = getCortexBeliefs();

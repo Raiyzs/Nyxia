@@ -108,6 +108,7 @@ const selfModelPath = path.join(app.getPath('userData'), 'nyxia-selfmodel.json')
 let _lanceReflections     = [];
 let _graphContext         = null;
 let _screenInterpretation = null;
+let _unifiedMemory        = '';
 // _krixContext → krixBrain.getKrixContext()
 // krixApiProc/brainCoreProc → internal to services/krix-brain.js
 // _learnedFacts + facts helpers → memory/facts.js
@@ -157,6 +158,9 @@ async function refreshLanceReflections(ctx = '') {
     }
     // Refresh KRIX-BRAIN world context in parallel (fire and forget)
     krixBrain.refreshKrixContext(ctx || dynamicQuery).catch(() => {});
+    // Deduped, budget-capped blend of beliefs+lance+graph+krix — the actual chat-path
+    // consumer of memory-manager.js (previously only sleep-cycle.js used it).
+    _unifiedMemory = await memoryManager.query(ctx || dynamicQuery);
   } catch (e) { _lanceReflections = []; }
 }
 
@@ -180,6 +184,7 @@ const buildSystemPrompt = require('./prompt-builder')({
   getLanceReflections:     () => _lanceReflections,
   getCortexBeliefs:        () => selfModelMod.getCortexBeliefs(),
   getGraphContext:         () => _graphContext,
+  getUnifiedMemory:        () => _unifiedMemory,
   getScreenInterpretation: () => _screenInterpretation,
   getLearnedFacts:         () => facts.getLearnedFacts(),
   getKrixBrainContext:     () => krixBrain.getKrixContext(),
