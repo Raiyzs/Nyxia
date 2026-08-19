@@ -110,10 +110,12 @@ class NyxiaMind extends EventEmitter {
     // Periodic self-reflection — grow identity every 12 minutes (deep Reflexion loop)
     setInterval(() => this._reflect(true), 12 * 60 * 1000);
 
-    // Periodic vision — query Screenpipe OCR every 30s
-    // 10s startup delay to let Screenpipe finish initialising
-    setTimeout(() => this._updateVision(), 10000);
-    setInterval(() => this._updateVision(), 30 * 1000);
+    // Vision is on-demand only, not a blind poll (2026-08-16 — was a 30s
+    // setInterval, held the 14GB qwen2.5vl:7b model in near-constant churn).
+    // Still fires automatically on real signals: window-focus change
+    // (_pollWindow's debounce, L226) and visualCortex's attention threshold
+    // (_startEyes) — plus explicit lookNow() requests. Revisit if that's
+    // not enough ambient awareness in practice.
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -625,6 +627,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'qwen2.5vl:7b',
+          keep_alive: 0,
           messages: [{ role: 'user',
             content: 'You are Nyxia\'s perception. Describe what you see on this screen region in one sentence, present tense, first person.',
             images: [b64] }],
@@ -743,6 +746,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'qwen2.5vl:7b',
+          keep_alive: 0,
           messages: [{
             role: 'user',
             content: 'Briefly describe what is on this screen in 1-2 sentences. Focus on the active application and what the user is doing.',
@@ -776,6 +780,7 @@ Return ONLY the single thought, no quotes, no preamble.`;
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: 'qwen2.5vl:7b',
+          keep_alive: 0,
           messages: [{ role: 'user', content: prompt, images: [b64] }],
           stream: false,
           options: { temperature: interrupt ? 0.3 : 0, num_predict: 60 }
