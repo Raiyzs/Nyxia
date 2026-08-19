@@ -215,6 +215,13 @@ module.exports = function registerChatIPC(ipcMain, deps) {
         shellResult = 'No explicit command found — wrap the command in backticks to run it.';
       }
       enrichedPrompt = systemPrompt + `\n\n---\nShell result:\n${shellResult}\n---`;
+    } else if (mode === 'desktop') {
+      fireBrain('Prefrontal', 0.8); fireBrain('Cerebellum', 0.9);
+      if (!event.sender.isDestroyed()) event.sender.send('council-thinking', ['Desktop']);
+      let desktopResult = '';
+      try { desktopResult = await desktopExecute(lastUserMsg); }
+      catch (e) { desktopResult = `Desktop action failed: ${e.message}`; }
+      enrichedPrompt = systemPrompt + `\n\n---\nDesktop action result:\n${desktopResult}\n---`;
     } else if (mode === 'filesystem') {
       fireBrain('Prefrontal', 0.8); fireBrain('Cerebellum', 0.6);
       if (!event.sender.isDestroyed()) event.sender.send('council-thinking', ['Filesystem']);
