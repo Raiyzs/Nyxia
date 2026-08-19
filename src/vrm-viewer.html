@@ -251,7 +251,7 @@ document.addEventListener('keydown', (e) => {
 
 // ── Automation control file — lets an external script drive clip/time
 // selection without simulating clicks on the native <select> dropdown. ──
-const CONTROL_FILE = '/tmp/claude-1000/-var-home-kvoldnes-claude-projects-nyxia/9d30f3f7-a907-42a4-ae4c-f0b291930a2c/scratchpad/vrm-control.json';
+const CONTROL_FILE = '/tmp/claude-1000/-var-home-kvoldnes-claude-projects-nyxia/f970be81-827a-401c-943a-b4b033e6cd83/scratchpad/vrm-control.json';
 let _lastControlSeq = -1;
 setInterval(() => {
   fs.readFile(CONTROL_FILE, 'utf8', (err, data) => {
@@ -360,7 +360,6 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
     });
 
     let model = null, mixer = null, avatarCtrl = null, modelBaseY = 0;
-    let headBone = null, neckBone = null;
     let faceMesh = null;
     const faceState = {};
     let blinkTimer = 3, blinkPhase = 'wait';
@@ -449,18 +448,6 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
       window._camBase = { x: 0, y: camY, z: dist, lookY: lookAtY };
 
       loadEl.style.display = 'none';
-
-      model.traverse(c => {
-        if (c.isSkinnedMesh && c.skeleton) {
-          if (!headBone) {
-            for (const b of c.skeleton.bones) {
-              const n = b.name.toLowerCase();
-              if (!headBone && /head/.test(n) && !/headtop|eye|hair/.test(n)) headBone = b;
-              if (!neckBone && /neck/.test(n)) neckBone = b;
-            }
-          }
-        }
-      });
 
       mixer = new THREE.AnimationMixer(model);
       window._animCtrl.mixer = mixer;
@@ -566,13 +553,9 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
         // Yaw slider spins the avatar itself left/right in place.
         model.rotation.y = orbit.yaw;
 
-        if (neckBone) {
-          neckBone.rotation.y +=  mouseNX * 0.18;
-          neckBone.rotation.x += -mouseNY * 0.10;
-        }
-        if (headBone) {
-          headBone.rotation.y +=  mouseNX * 0.28;
-          headBone.rotation.x += -mouseNY * 0.18;
+        if (window.nyxiaVRM?.lookAt) {
+          window.nyxiaVRM.lookAt.yaw   = -mouseNX * 20;
+          window.nyxiaVRM.lookAt.pitch = -mouseNY * 10;
         }
       }
 
