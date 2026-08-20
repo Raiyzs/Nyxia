@@ -21,7 +21,7 @@ const environmentState  = require('./environment-state');
 const { startSleepCycle, getMorningThought, getNarrativeArc, notifyActivity } = require('./sleep-cycle');
 const { browserExecute, closeBrowser, setViewId, browserLoad } = require('./browser');
 const { desktopExecute } = require('./desktop');
-const { executeShell, formatResult } = require('./shell');
+const { formatResult } = require('./shell');
 const { runAgentLoop, runCodingLoop } = require('./agent-loop');
 const { NYXIA_TOOLS, runTool } = require('./nyxia-tools');
 const bridgeClient = require('./bridge-client');
@@ -1389,6 +1389,13 @@ const bridgeListFiles = path => bridgeClient.bridgeListFiles(path, loadConfig()?
 // Nyxia's declared tool_scope, tracked separately in AGENT_TOOL_SCOPE.md.
 const fsReadFile = path => bridgeClient.bridgeReadFile(path, loadConfig()?.keys?.bridgeTokenNyxia);
 const fsListDir  = path => bridgeClient.bridgeListFiles(path, loadConfig()?.keys?.bridgeTokenNyxia);
+
+// shell — 2026-08-20: was a local unscoped child_process.exec (blocklist-only,
+// no path jail) in shell.js. Now routes through the same claude-bridge scoped
+// path as fs_read/fs_list above — blocklist AND cwd-scope checked server-side.
+// cwd defaults to the nyxia project dir (an exact tool_scope.paths entry) since
+// the 'shell' tool schema has no cwd argument of its own to pass through.
+const executeShell = cmd => bridgeClient.bridgeRunCommand(cmd, loadConfig()?.keys?.bridgeTokenNyxia, '/var/home/kvoldnes/claude-projects/nyxia');
 
 // Streaming guard — read by awareness-loop to prevent interrupting active responses
 let _isStreaming = false;

@@ -16,8 +16,11 @@ const TIMEOUT_MS = 15000;
 
 let _id = 0;
 
+// Returns { text, isError } — callers that only ever want display text (the
+// three wrappers below) unwrap .text; bridgeRunCommand needs .isError too, to
+// tell a failed command apart from a successful one that just printed text.
 async function _bridgeCall(tool, args, token) {
-  if (!token) return 'Bridge token not configured — set keys.bridgeTokenNyxia in nyxia-config.json.';
+  if (!token) return { text: 'Bridge token not configured — set keys.bridgeTokenNyxia in nyxia-config.json.', isError: true };
   try {
     const res = await fetch(BRIDGE_URL, {
       method: 'POST',
@@ -34,28 +37,42 @@ async function _bridgeCall(tool, args, token) {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const data = await res.json().catch(() => null);
-    if (!data) return `Bridge call failed: HTTP ${res.status}`;
-    if (data.error) return `Bridge denied: ${data.error.message}`;
+    if (!data) return { text: `Bridge call failed: HTTP ${res.status}`, isError: true };
+    if (data.error) return { text: `Bridge denied: ${data.error.message}`, isError: true };
     const text = (data.result?.content || [])
       .filter(c => c.type === 'text')
       .map(c => c.text)
       .join('\n');
-    return text || '(empty)';
+    return { text: text || '(empty)', isError: !!data.result?.isError };
   } catch (e) {
-    return `Bridge unreachable: ${e.message}`;
+    return { text: `Bridge unreachable: ${e.message}`, isError: true };
   }
 }
 
-function bridgeReadFile(path, token) {
-  return _bridgeCall('read_file', { path }, token);
+async function bridgeReadFile(path, token) {
+  return (await _bridgeCall('read_file', { path }, token)).text;
 }
 
-function bridgeListFiles(path, token, depth) {
-  return _bridgeCall('list_files', { path, depth }, token);
+async function bridgeListFiles(path, token, depth) {
+  return (await _bridgeCall('list_files', { path, depth }, token)).text;
 }
 
-function bridgeOpenFile(path, token, app) {
-  return _bridgeCall('open_in_vscode', app ? { path, app } : { path }, token);
+async function bridgeOpenFile(path, token, app) {
+  return (await _bridgeCall('open_in_vscode', app ? { path, app } : { path }, token)).text;
 }
 
-module.exports = { bridgeReadFile, bridgeListFiles, bridgeOpenFile };
+// Same shape shell.js's old local executeShell() returned, so formatResult()
+// and every existing 'shell' tool call site keep working unchanged — only
+// where the command actually runs changes (claude-bridge's scoped run_command,
+// blocklist + cwd-scope checked server-side, instead of an unscoped local exec).
+async function bridgeRunCommand(cmd, token, cwd) {
+  const r = await _bridgeCall('run_command', { command: cmd, cwd }, token);
+  return {
+    stdout: r.isError ? '' : r.text,
+    stderr: r.isError ? r.text : '',
+    code:   r.isError ? 1 : 0,
+    error:  null,
+  };
+}
+
+module.exports = { bridgeReadFile, bridgeListFiles, bridgeOpenFile, bridgeRunCommand };
