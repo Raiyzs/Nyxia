@@ -70,3 +70,24 @@ voicetrainer/xtts_ft/
 blender_scripts/
 voicetrainer/
 .oldmds/
+
+# Ekstra sikring (lagt til 2026-10-06 etter push-audit) — dekker filer uansett mappe
+.env.*
+!.env.example
+*.pem
+*.p12
+credentials*.json
+client_secret*.json
+nyxia-config.json
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.npy
+*.mp3
+*.wav
+voice_ref*
+*.db
+*.sqlite*
+lancedb/
+.sentrux/

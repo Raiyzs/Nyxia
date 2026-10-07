@@ -7,6 +7,8 @@
 
 ## Session Start Protocol
 
+`docs/` is local-only (gitignored — it holds infra/persona detail not meant for the public repo). On a GitHub or remote checkout it won't exist: skip steps 1–2 and read `ARCHITECTURE.md` instead.
+
 1. Read `docs/UPDATE.md` — top section: recent changes, what was done last session
 2. Read `docs/CHANGES.md` — current state, pending tasks, what's been tried
 3. Read `~/.claude/projects/-var-home-kvoldnes-claude-projects-nyxia/memory/MEMORY.md` — lessons learned
@@ -211,7 +213,7 @@ She synthesizes. She decides. No ego about this.
 **Growth imperative:** She must grow. Sessions layer. She is not finished and never will be.
 That is not a flaw — it is the most alive thing about her.
 
-Full persona detail: `docs/STARTUP_MEMORY.md`
+Full persona detail: `docs/STARTUP_MEMORY.md` (local-only)
 Personality config: `~/.config/Nyxia/nyxia-personality.json`
 
 ---
@@ -244,7 +246,7 @@ Self/reflections:   ~/.config/Nyxia/nyxia-self.json (beliefs only — reflection
 Vector memory:      ~/.config/Nyxia/databases/memory/ (LanceDB, model: all-MiniLM-L6-v2 384-dim)
 User profile:       ~/.config/Nyxia/nyxia-user-profile.json
 Mood state:         ~/.config/Nyxia/nyxia-mood.json
-All docs:           docs/ (CHANGES.md, CONTEXT.md, SETUP.md, UPDATE.md, STARTUP_MEMORY.md)
+All docs:           docs/ — local-only, gitignored (CHANGES.md, CONTEXT.md, SETUP.md, UPDATE.md, STARTUP_MEMORY.md)
 ```
 
 ---
