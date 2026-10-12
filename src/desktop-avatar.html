@@ -308,7 +308,7 @@ ipcRenderer.on('mind-high-load', (_, { loadPct }) => {
             const ld2 = new GLTFLoader();
             ld2.setDRACOLoader(dl2);
             ld2.parse(ab, '', g2 => {
-              const retargeted = retargetMixamoToVRM(g2.animations, vrm);
+              const retargeted = retargetMixamoToVRM(g2.animations, vrm, g2.scene);
               retargeted.push(buildRestIdleClip(THREE, vrm));
               ipcRenderer.send('log', `[desktop-avatar] ${retargeted.length} clips live`);
               initCtrl(retargeted);

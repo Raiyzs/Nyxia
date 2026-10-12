@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Extracts animations from Nyxia3dV2.glb into a slim nyxia-anims.glb
-// Output contains only: nodes (names), animations, accessors, bufferViews, buffer
+// Output contains only: nodes (names + hierarchy + rest TRS), animations, accessors, bufferViews, buffer
 'use strict';
 const fs   = require('fs');
 const path = require('path');
@@ -31,11 +31,17 @@ for (const ai of usedAcc) {
   if (acc.bufferView != null) usedBV.add(acc.bufferView);
 }
 
-// Collect node indices used by animation channels
+// Collect node indices used by animation channels, plus every ancestor, so
+// the slim file keeps the full bone hierarchy and rest transforms. The VRM
+// retargeter (src/mixamo-vrm-retarget.js) needs world-space rest rotations,
+// which only exist when parents and their translation/rotation/scale survive.
+const parentOf = {};
+gltf.nodes.forEach((n, i) => (n.children || []).forEach(c => { parentOf[c] = i; }));
 const usedNode = new Set();
 for (const anim of gltf.animations || []) {
   for (const ch of anim.channels) {
-    if (ch.target?.node != null) usedNode.add(ch.target.node);
+    let n = ch.target?.node;
+    while (n != null && !usedNode.has(n)) { usedNode.add(n); n = parentOf[n]; }
   }
 }
 
@@ -69,14 +75,22 @@ for (const oldIdx of sortedAccs) {
   newAccs.push(acc);
 }
 
-// Remap nodes (only names + children, no mesh/skin refs)
+// Remap nodes (names, hierarchy and rest TRS — no mesh/skin refs)
 const sortedNodes = [...usedNode].sort((a, b) => a - b);
 const nodeRemap   = {};
-const newNodes    = [];
-for (const oldIdx of sortedNodes) {
-  nodeRemap[oldIdx] = newNodes.length;
-  newNodes.push({ name: gltf.nodes[oldIdx].name });
-}
+sortedNodes.forEach((oldIdx, i) => { nodeRemap[oldIdx] = i; });
+const newNodes = sortedNodes.map(oldIdx => {
+  const n = gltf.nodes[oldIdx];
+  const out = { name: n.name };
+  if (n.translation) out.translation = n.translation;
+  if (n.rotation)    out.rotation    = n.rotation;
+  if (n.scale)       out.scale       = n.scale;
+  if (n.matrix)      out.matrix      = n.matrix;
+  const children = (n.children || []).filter(c => usedNode.has(c)).map(c => nodeRemap[c]);
+  if (children.length) out.children = children;
+  return out;
+});
+const rootNodes = sortedNodes.filter(i => parentOf[i] == null || !usedNode.has(parentOf[i])).map(i => nodeRemap[i]);
 
 // Remap animations
 const newAnims = gltf.animations.map(anim => ({
@@ -99,7 +113,7 @@ const newAnims = gltf.animations.map(anim => ({
 const newGltf = {
   asset:  gltf.asset,
   scene:  0,
-  scenes: [{ nodes: newNodes.map((_, i) => i) }],
+  scenes: [{ nodes: rootNodes }],
   nodes:       newNodes,
   accessors:   newAccs,
   bufferViews: newBVs,

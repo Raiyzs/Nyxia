@@ -108,6 +108,7 @@ Future sessions should not re-discover the same lessons.
 - Blender 5.1 fcurves: wrap in try/except, handle both `action.fcurves` and layered action API
 - Electron 28 webviews: `webpreferences="contextIsolation=false"` required for IPC inside webviews
 - Combined window layout: `position: absolute; top: 7px; bottom: 7px` — not flex
+- VRM retarget: sample the source rig's WORLD rotations and write world-space deltas onto three-vrm's normalized bones (`src/mixamo-vrm-retarget.js`). Local-frame deltas (`q_rest⁻¹·q_anim`) fold the torso and spin the head — never go back to that. `nyxia-anims.glb` must carry the bone hierarchy: re-run `node extract-anims.js` after changing the source model.
 
 ---
 

@@ -171,9 +171,9 @@ class NyxiaAvatarController {
 
     // Map emotion states to animation clip names in the GLB
     this.ANIM_MAP = {
-      idle:      'rest_idle',
-      thinking:  'rest_idle',
-      talking:   'complain_02',
+      idle:      'idle',
+      thinking:  'fold_arms',
+      talking:   'complain_01',
       happy:     'cheer',
       sad:       'cry',
       curious:   'play_video_game',

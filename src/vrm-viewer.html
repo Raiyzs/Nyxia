@@ -487,7 +487,7 @@ window.onunhandledrejection = (e) => showErr(`Promise error: ${e.reason}`);
           ld2.register((parser) => new VRMLoaderPlugin(parser));
           ld2.parse(ab, '', g2 => {
             window._rawMixamoClips = g2.animations; // debug: pre-retarget source clips
-            const retargeted = retargetMixamoToVRM(g2.animations, vrm);
+            const retargeted = retargetMixamoToVRM(g2.animations, vrm, g2.scene);
             retargeted.push(buildRestIdleClip(THREE, vrm));
             console.log(`[vrm-viewer] ${retargeted.length} clips retargeted (+ rest_idle)`);
             initClips(retargeted);

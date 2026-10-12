@@ -1,8 +1,38 @@
 // Shared Mixamo (Nyxia3dV2.glb) → VRM humanoid retargeting.
 // Used by desktop-avatar.html (live overlay) and vrm-viewer.html (standalone
 // test viewer) so both play the same 42 nyxia-anims.glb clips on a VRM rig.
+//
+// How it works (the standard three-vrm Mixamo recipe, generalised to any rig):
+//
+//   1. The SOURCE scene (nyxia-anims.glb — it must carry the bone hierarchy and
+//      rest transforms, which `extract-anims.js` now preserves) is posed by a
+//      THREE.AnimationMixer at SAMPLE_FPS and every mapped bone's WORLD rotation
+//      is read back. Sampling world transforms means unmapped in-between bones
+//      (twist bones, extra spine segments) still contribute their motion.
+//
+//   2. Each bone's world-space delta from its own rest pose becomes the VRM
+//      normalized bone's local rotation. three-vrm's normalized bones all rest
+//      at world identity, so their local quaternion IS a world-aligned rotation
+//      relative to the parent. World-space deltas are therefore the only frame
+//      that transfers correctly:
+//
+//        local(b) = R(p)⁻¹ · rest(Sp) · anim(Sp)⁻¹ · anim(Sb) · rest(Sb)⁻¹ · R(b)
+//
+//      (Sb / Sp: source bone and its nearest mapped source ancestor; rest/anim:
+//      world rotations; R: rest correction from step 3.)
+//
+//      The previous version applied deltas in the source bone's own LOCAL rest
+//      frame (q_rest⁻¹ · q_anim). In Nyxia3dV2 that frame is rotated ~180° for
+//      the spine chain and ~120° for the arms, so every clip that bent the
+//      torso (fold_arms, complain_01, cast_a_spell…) collapsed forward and the
+//      head spun — the "bad mocap" was really a wrong coordinate frame.
+//
+//   3. Rest-pose mismatch (source rests arms-down, VRM rests in T-pose) is
+//      solved per bone with a world-space correction R that rotates the VRM's
+//      rest bone direction onto the source's rest bone direction. It is derived
+//      from the two skeletons' joint positions — no hand-tuned angles.
 
-// Nyxia3dV2.glb bone name → VRM humanoid bone name (girl_character2*.vrm)
+// Nyxia3dV2.glb bone name → VRM humanoid bone name
 const MIXAMO_TO_VRM = {
   Hip:         'hips',
   Waist:       'spine',
@@ -24,91 +54,194 @@ const MIXAMO_TO_VRM = {
   R_Calf:      'rightLowerLeg',
   R_Foot:      'rightFoot',
 };
+const VRM_TO_MIXAMO = Object.fromEntries(Object.entries(MIXAMO_TO_VRM).map(([m, v]) => [v, m]));
 
-// Retargeting: q_vrm = q_src_rest_inv * q_src_anim
-// Converts absolute bone rotations into delta-from-rest, making them coordinate-system agnostic.
-// The VRM starts from its own identity rest pose and gets the same relative rotation applied.
-// Rest rotations extracted from Nyxia3dV2.glb nodes.
-const SRC_REST = {
-  Hip:         [ 0.324243,-0.324243,-0.126084, 0.879679],
-  Waist:       [-0.115333,-0.885280,-0.302947, 0.333467],
-  Spine01:     [-0.000001,-0.000000,-0.000000, 1.000000],
-  NeckTwist01: [-0.000000,-0.000000, 0.000000, 1.000000],
-  Head:        [ 0.000004, 0.000004, 0.000000, 1.000000],
-  L_Clavicle:  [ 0.615907,-0.781169, 0.063245, 0.080215],
-  L_Upperarm:  [ 0.035483,-0.001175,-0.179511, 0.983115],
-  L_Forearm:   [ 0.022997, 0.001068, 0.100903, 0.994630],
-  L_Hand:      [ 0.000000,-0.000000,-0.000000, 1.000000],
-  R_Clavicle:  [ 0.628747, 0.770867,-0.064586, 0.079185],
-  R_Upperarm:  [ 0.003038, 0.000105, 0.180386, 0.983591],
-  R_Forearm:   [ 0.064823,-0.002970,-0.100920, 0.992776],
-  R_Hand:      [-0.000000,-0.000004, 0.000001, 1.000000],
-  L_Thigh:     [ 0.999469,-0.027281, 0.000181, 0.017812],
-  L_Calf:      [-0.255699, 0.019532, 0.037713, 0.965823],
-  L_Foot:      [ 0.871717,-0.056425,-0.024633, 0.486126],
-  R_Thigh:     [ 0.987060,-0.008572,-0.001391, 0.160115],
-  R_Calf:      [-0.001979, 0.000036, 0.018037, 0.999835],
-  R_Foot:      [ 0.812036,-0.020339,-0.006436, 0.583218],
+// VRM humanoid parent chain, restricted to the bones we map.
+const VRM_PARENT = {
+  hips: null, spine: 'hips', chest: 'spine', neck: 'chest', head: 'neck',
+  leftShoulder: 'chest', leftUpperArm: 'leftShoulder', leftLowerArm: 'leftUpperArm', leftHand: 'leftLowerArm',
+  rightShoulder: 'chest', rightUpperArm: 'rightShoulder', rightLowerArm: 'rightUpperArm', rightHand: 'rightLowerArm',
+  leftUpperLeg: 'hips', leftLowerLeg: 'leftUpperLeg', leftFoot: 'leftLowerLeg',
+  rightUpperLeg: 'hips', rightLowerLeg: 'rightUpperLeg', rightFoot: 'rightLowerLeg',
 };
 
-// Per-clip, time-windowed corrective nudges — for isolated pose-vs-clothing
-// clashes that only occur in a brief slice of one specific clip. Unlike
-// ARM_REST_OFFSET (always-on, every clip), these blend in/out around a
-// [start,end] window so the rest of the clip is untouched.
-const CLIP_TIME_CORRECTIONS = {
-  frustrated_01: [
-    // Right hand rests on the hip ~t2.8-3.7s; the sleeve cuff pokes through
-    // the raised skirt pleat there. Nudge the forearm to lift the wrist
-    // clear of the pleat without changing the rest of the gesture.
-    { bone: 'R_Forearm', start: 2.8, end: 3.7, fade: 0.2, axis: [0, 1, 0], angleDeg: 55 },
-  ],
+// The bone each one "points at" — defines its rest direction for the rest
+// correction. Bones without an entry (hips, head, hands, feet) use identity
+// (hips) or inherit their parent's correction.
+const CHAIN_CHILD = {
+  spine: 'chest', chest: 'neck', neck: 'head',
+  leftShoulder: 'leftUpperArm', leftUpperArm: 'leftLowerArm', leftLowerArm: 'leftHand',
+  rightShoulder: 'rightUpperArm', rightUpperArm: 'rightLowerArm', rightLowerArm: 'rightHand',
+  leftUpperLeg: 'leftLowerLeg', leftLowerLeg: 'leftFoot',
+  rightUpperLeg: 'rightLowerLeg', rightLowerLeg: 'rightFoot',
 };
 
-function correctionWeight(c, time) {
-  if (time < c.start - c.fade || time > c.end + c.fade) return 0;
-  if (time < c.start) return smoothstep(c.start - c.fade, c.start, time);
-  if (time > c.end) return 1 - smoothstep(c.end, c.end + c.fade, time);
-  return 1;
+const SAMPLE_FPS = 30;
+
+// buildRetargeter(THREE) → retargetMixamoToVRM(clips, vrm, srcScene)
+// THREE is passed in rather than imported here because callers load it via
+// a dynamic `import('three')` against their own importmap.
+function buildRetargeter(THREE) {
+  const _q = new THREE.Quaternion(), _qi = new THREE.Quaternion(), _qp = new THREE.Quaternion();
+  const _v = new THREE.Vector3();
+
+  return function retargetMixamoToVRM(clips, vrm, srcScene) {
+    if (!srcScene) throw new Error('[retarget] srcScene (the nyxia-anims.glb scene) is required');
+
+    // ── Source side: mapped nodes + rest world transforms ──────────────
+    const srcNodes = {};
+    srcScene.traverse(n => { if (MIXAMO_TO_VRM[n.name] && !srcNodes[n.name]) srcNodes[n.name] = n; });
+    const hasHierarchy = Object.values(srcNodes).some(n => n.parent && n.parent !== srcScene);
+    if (!hasHierarchy) {
+      console.error('[retarget] nyxia-anims.glb has no bone hierarchy — re-run `node extract-anims.js`. Clips will be wrong.');
+    }
+
+    // VRM 0.x models face -Z (VRM 1.0 and Mixamo face +Z). three-vrm's own
+    // Mixamo sample flips x/z of every quaternion for 0.x; rotating the source
+    // scene 180° about Y before sampling achieves the same in one line.
+    const srcRotY = srcScene.rotation.y;
+    if (vrm.meta?.metaVersion === '0') srcScene.rotation.y += Math.PI;
+
+    const restSnapshot = [];
+    srcScene.traverse(n => restSnapshot.push([n, n.position.clone(), n.quaternion.clone(), n.scale.clone()]));
+    const restoreRest = () => { for (const [n, p, q, s] of restSnapshot) { n.position.copy(p); n.quaternion.copy(q); n.scale.copy(s); } };
+
+    srcScene.updateMatrixWorld(true);
+    const srcRestQ = {}, srcRestP = {};
+    for (const [m, n] of Object.entries(srcNodes)) {
+      srcRestQ[m] = n.getWorldQuaternion(new THREE.Quaternion());
+      srcRestP[m] = n.getWorldPosition(new THREE.Vector3());
+    }
+
+    // ── VRM side: normalized bones (see note below) + rest positions ───
+    // Target the NORMALIZED humanoid bones, not raw: VRMHumanoid.update()
+    // copies normalizedHumanBones → rawHumanBones every frame, so animating raw
+    // bones directly gets overwritten back to bind pose on the next frame.
+    const vrmNodes = {}, vrmRestP = {};
+    for (const [m, v] of Object.entries(MIXAMO_TO_VRM)) {
+      const node = srcNodes[m] && vrm.humanoid.getNormalizedBoneNode?.(v);
+      if (node) vrmNodes[v] = node;
+    }
+    for (const [v, node] of Object.entries(vrmNodes)) {
+      node.updateWorldMatrix(true, false);
+      vrmRestP[v] = node.getWorldPosition(new THREE.Vector3());
+    }
+    console.log(`[retarget] bone map: ${Object.keys(vrmNodes).length}/${Object.keys(MIXAMO_TO_VRM).length} bones mapped`);
+
+    const vrmParentOf = v => { let p = VRM_PARENT[v]; while (p && !vrmNodes[p]) p = VRM_PARENT[p]; return p; };
+    const chainChildOf = v => { let c = CHAIN_CHILD[v]; while (c && !vrmNodes[c]) c = CHAIN_CHILD[c]; return c; };
+
+    // Rest correction R per VRM bone: rotates the VRM rest bone direction onto
+    // the source rest bone direction (world space).
+    const R = {};
+    const restCorrection = v => {
+      if (R[v]) return R[v];
+      const c = chainChildOf(v), p = vrmParentOf(v);
+      let q;
+      if (c) {
+        const vrmDir = vrmRestP[c].clone().sub(vrmRestP[v]).normalize();
+        const srcDir = srcRestP[VRM_TO_MIXAMO[c]].clone().sub(srcRestP[VRM_TO_MIXAMO[v]]).normalize();
+        q = new THREE.Quaternion().setFromUnitVectors(vrmDir, srcDir);
+      } else if (p) {
+        q = restCorrection(p).clone();
+      } else {
+        q = new THREE.Quaternion();
+      }
+      R[v] = q;
+      return q;
+    };
+    const Rinv = {};
+    for (const v of Object.keys(vrmNodes)) { restCorrection(v); Rinv[v] = R[v].clone().invert(); }
+
+    // Hips translation: scale the source's world-space hip offset by the
+    // ratio of standing heights (hips above feet) so crouches and bounces
+    // keep their proportion on the VRM.
+    const hipsNode = vrmNodes.hips;
+    const floorY = (P, l, r, h) => Math.min(P[l]?.y ?? P[h].y, P[r]?.y ?? P[h].y);
+    const srcHipH = srcRestP.Hip ? srcRestP.Hip.y - floorY(srcRestP, 'L_Foot', 'R_Foot', 'Hip') : 0;
+    const vrmHipH = hipsNode ? vrmRestP.hips.y - floorY(vrmRestP, 'leftFoot', 'rightFoot', 'hips') : 0;
+    const hipScale = srcHipH > 1e-6 && vrmHipH > 1e-6 ? vrmHipH / srcHipH : 1;
+
+    // ── Sample every clip on the source rig, write VRM-space tracks ────
+    const mixer = new THREE.AnimationMixer(srcScene);
+    const animQ = {};
+    for (const m of Object.keys(srcNodes)) animQ[m] = new THREE.Quaternion();
+
+    const out = clips.map(clip => {
+      restoreRest();
+      const action = mixer.clipAction(clip);
+      action.play();
+
+      const n = Math.max(2, Math.ceil(clip.duration * SAMPLE_FPS) + 1);
+      const times = new Float32Array(n);
+      const rot = {};
+      for (const v of Object.keys(vrmNodes)) rot[v] = new Float32Array(n * 4);
+      const pos = hipsNode && srcNodes.Hip ? new Float32Array(n * 3) : null;
+
+      for (let i = 0; i < n; i++) {
+        const t = Math.min(clip.duration, i / SAMPLE_FPS);
+        times[i] = t;
+        action.time = t;
+        mixer.update(0);
+        srcScene.updateMatrixWorld(true);
+        for (const [m, node] of Object.entries(srcNodes)) node.getWorldQuaternion(animQ[m]);
+
+        for (const [v, buf] of Object.entries(rot)) {
+          const m = VRM_TO_MIXAMO[v], p = vrmParentOf(v);
+          // local(b) = R(p)⁻¹ · rest(Sp) · anim(Sp)⁻¹ · anim(Sb) · rest(Sb)⁻¹ · R(b)
+          _q.copy(animQ[m]).multiply(_qi.copy(srcRestQ[m]).invert());
+          if (p) {
+            const mp = VRM_TO_MIXAMO[p];
+            _q.premultiply(_qp.copy(animQ[mp]).invert()).premultiply(srcRestQ[mp]).premultiply(Rinv[p]);
+          }
+          _q.multiply(R[v]);
+          // Hemisphere continuity: q and -q are the same rotation, but the
+          // keyframe interpolator slerps the long way round if neighbours sit on
+          // opposite sides of the double cover. Keep each sample in the same
+          // hemisphere as the previous one.
+          if (i > 0) {
+            const o = (i - 1) * 4;
+            if (buf[o] * _q.x + buf[o + 1] * _q.y + buf[o + 2] * _q.z + buf[o + 3] * _q.w < 0) {
+              _q.set(-_q.x, -_q.y, -_q.z, -_q.w);
+            }
+          }
+          buf[i * 4] = _q.x; buf[i * 4 + 1] = _q.y; buf[i * 4 + 2] = _q.z; buf[i * 4 + 3] = _q.w;
+        }
+
+        if (pos) {
+          srcNodes.Hip.getWorldPosition(_v).sub(srcRestP.Hip).multiplyScalar(hipScale).add(hipsNode.position);
+          pos[i * 3] = _v.x; pos[i * 3 + 1] = _v.y; pos[i * 3 + 2] = _v.z;
+        }
+      }
+      action.stop();
+      mixer.uncacheClip(clip);
+
+      const tracks = [];
+      for (const [v, buf] of Object.entries(rot)) {
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${vrmNodes[v].name}.quaternion`, times, buf));
+      }
+      if (pos) tracks.push(new THREE.VectorKeyframeTrack(`${hipsNode.name}.position`, times, pos));
+      return new THREE.AnimationClip(clip.name, clip.duration, tracks);
+    });
+
+    restoreRest();
+    srcScene.rotation.y = srcRotY;
+    srcScene.updateMatrixWorld(true);
+    return out;
+  };
 }
 
-function smoothstep(edge0, edge1, x) {
-  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-function axisAngleQuat(axis, angleRad) {
-  const half = angleRad / 2, s = Math.sin(half);
-  return [axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(half)];
-}
-
-function qMul(a, b) {
-  return [
-    a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
-    a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
-    a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
-    a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2]
-  ];
-}
-
-// The source rig (Nyxia3dV2.glb) rests with arms down; the VRM rests in
-// T-pose (arms out) — a plain delta-from-rest (SRC_REST_INV above) only
-// cancels correctly when both rigs share a rest direction, which is true
-// for legs/spine but not arms: with near-zero delta (idle barely moves the
-// source arm from its own rest), the VRM is left at ITS rest, i.e. T-pose.
-// ARM_REST_OFFSET is a per-bone constant, computed once from the loaded
-// VRM's own T-pose bone directions, that rotates the upper arm/forearm from
-// T-pose down to a natural hanging pose. It's left-multiplied onto the
-// retargeted delta so idle settles into that hang, and animated clips swing
-// the arm starting from there instead of from T-pose.
+// buildRestIdleClip(THREE, vrm) → a static "arms hanging naturally" AnimationClip.
+// Needs no Mixamo source data at all — a T-pose→natural-hang vector trick baked
+// into a standalone 2-keyframe clip. Works on any loaded VRM, which is what
+// makes it useful for index.html: that window loads a VRM with zero baked
+// animation clips and would otherwise sit in bind T-pose.
 const ARM_NATURAL_DIR = {
   L_Upperarm: [ 0.42, -0.90, 0.08],
   R_Upperarm: [-0.42, -0.90, 0.08],
 };
-// Forearm gets its own, more inward target — a straight rigid arm forces a
-// tradeoff between "elbow clears the torso" and "hand doesn't cross the
-// midline" (both scale together with one direction). A real relaxed arm has
-// a slight elbow bend: upper arm swings out for clearance, forearm curls
-// back toward the hip. Same [x,y,z] world-direction convention as above.
+// Forearm gets its own, more inward target — a slight elbow bend reads as a
+// relaxed arm; a rigid straight arm either clips the torso or crosses the hip.
 const FOREARM_NATURAL_DIR = {
   L_Upperarm: [ 0.18, -0.96, 0.18],
   R_Upperarm: [-0.18, -0.96, 0.18],
@@ -119,96 +252,6 @@ const ARM_REST_CHAINS = {
 };
 const ARM_HAND_BONE = { L_Upperarm: 'leftHand', R_Upperarm: 'rightHand' };
 
-// buildRetargeter(THREE) → retargetMixamoToVRM(clips, vrm)
-// THREE is passed in rather than imported here because callers load it via
-// a dynamic `import('three')` against their own importmap.
-function buildRetargeter(THREE) {
-  const SRC_REST_INV = {};
-  for (const [k, q] of Object.entries(SRC_REST)) SRC_REST_INV[k] = [-q[0],-q[1],-q[2], q[3]];
-
-  return function retargetMixamoToVRM(clips, vrm) {
-    // Target the NORMALIZED humanoid bones, not raw: VRMHumanoid.update()
-    // copies normalizedHumanBones → rawHumanBones every frame (autoUpdateHumanBones,
-    // true by default) — animating raw bones directly gets silently overwritten
-    // back to bind pose on the very next frame, which is why the model sat frozen
-    // in its T-pose bind no matter what the mixer played.
-    const boneMap = {};
-    for (const [mixName, vrmBoneName] of Object.entries(MIXAMO_TO_VRM)) {
-      const node = vrm.humanoid.getNormalizedBoneNode?.(vrmBoneName);
-      if (node) boneMap[mixName] = node.name;
-    }
-    console.log(`[retarget] bone map: ${Object.keys(boneMap).length}/${Object.keys(MIXAMO_TO_VRM).length} bones mapped`);
-
-    // Build per-bone rest-offset quaternions from the live VRM's own T-pose.
-    const ARM_REST_OFFSET = {};
-    const _pa = new THREE.Vector3(), _pb = new THREE.Vector3();
-    for (const [mixName, [fromBone, toBone]] of Object.entries(ARM_REST_CHAINS)) {
-      const a = vrm.humanoid.getNormalizedBoneNode?.(fromBone);
-      const b = vrm.humanoid.getNormalizedBoneNode?.(toBone);
-      if (!a || !b) continue;
-      a.updateWorldMatrix(true, false); b.updateWorldMatrix(true, false);
-      a.getWorldPosition(_pa); b.getWorldPosition(_pb);
-      const tPoseDir  = _pb.clone().sub(_pa).normalize();
-      const naturalDir = new THREE.Vector3(...ARM_NATURAL_DIR[mixName]).normalize();
-      const q = new THREE.Quaternion().setFromUnitVectors(tPoseDir, naturalDir);
-      ARM_REST_OFFSET[mixName] = [q.x, q.y, q.z, q.w];
-    }
-
-    return clips.map(clip => {
-      const tracks = [];
-      for (const track of clip.tracks) {
-        const dot = track.name.lastIndexOf('.');
-        const boneName = track.name.slice(0, dot);
-        const prop     = track.name.slice(dot + 1);
-        const nodeName = boneMap[boneName];
-        if (!nodeName) continue;
-        // Skip position tracks — VRM bones stay at their rest positions
-        if (prop === 'position') continue;
-        const t = track.clone();
-        t.name = `${nodeName}.${prop}`;
-        // Apply delta-from-rest: q_vrm = q_src_rest_inv * q_src_anim
-        if (prop === 'quaternion' && SRC_REST_INV[boneName]) {
-          const ri = SRC_REST_INV[boneName];
-          const offset = ARM_REST_OFFSET[boneName];
-          const corrections = (CLIP_TIME_CORRECTIONS[clip.name] || []).filter(c => c.bone === boneName);
-          // Hemisphere continuity: q and -q are the same rotation, but Three.js's
-          // keyframe interpolator doesn't know that — if adjacent keyframes end up
-          // on opposite sides of that double-cover (common after this per-sample
-          // remap), it slerps the "long way around" and the limb whips through a
-          // ~360° flip between two poses that were never actually far apart. Since
-          // negating a quaternion doesn't change the pose it represents, flipping
-          // the sign back into the same hemisphere as the previous keyframe fixes
-          // the interpolation path without changing any sampled pose.
-          let prev = null;
-          for (let i = 0; i < t.values.length; i += 4) {
-            const q = [t.values[i], t.values[i+1], t.values[i+2], t.values[i+3]];
-            let r = qMul(ri, q);
-            if (offset) r = qMul(offset, r);
-            for (const c of corrections) {
-              const w = correctionWeight(c, t.times[i / 4]);
-              if (w > 0) r = qMul(r, axisAngleQuat(c.axis, THREE.MathUtils.degToRad(c.angleDeg) * w));
-            }
-            if (prev && (r[0]*prev[0] + r[1]*prev[1] + r[2]*prev[2] + r[3]*prev[3]) < 0) {
-              r = [-r[0], -r[1], -r[2], -r[3]];
-            }
-            prev = r;
-            t.values[i]=r[0]; t.values[i+1]=r[1]; t.values[i+2]=r[2]; t.values[i+3]=r[3];
-          }
-        }
-        tracks.push(t);
-      }
-      return new THREE.AnimationClip(clip.name, clip.duration, tracks);
-    });
-  };
-}
-
-// buildRestIdleClip(THREE, vrm) → a static "arms hanging naturally" AnimationClip.
-// Needs no Mixamo source data at all — same T-pose→natural-hang vector trick as
-// ARM_REST_OFFSET above, just baked into a standalone 2-keyframe clip instead of
-// composed onto an animated track. Works on any loaded VRM (girl_character2*.vrm
-// or vrm_girl.vrm), which is what makes it useful for index.html too: that window
-// loads a VRM with zero baked animation clips and has been stuck in bind T-pose
-// with nothing to fall back on.
 function buildRestIdleClip(THREE, vrm, opts) {
   const { name = 'rest_idle', duration = 4 } = opts || {};
   const armOffsets = {}; // vrm bone name -> [x,y,z,w]
@@ -231,33 +274,20 @@ function buildRestIdleClip(THREE, vrm, opts) {
     // quaternion is identity, but its PARENT (shoulder/chest) is not at world
     // identity, so this world delta has to be conjugated into the bone's local
     // frame (parent^-1 * worldDelta * parent) before it can be assigned to
-    // node.quaternion — assigning it directly (as ARM_REST_OFFSET does, composed
-    // on top of a real animated delta) is close enough to pass unnoticed, but
-    // as the ENTIRE rotation for a static pose the error was obvious: arms
-    // stayed pinned near T-pose instead of swinging down.
+    // node.quaternion.
     shoulder.parent.getWorldQuaternion(_parentWorldQ);
     const shoulderParentQ = _parentWorldQ.clone();
     const upperWorldDelta = new THREE.Quaternion().setFromUnitVectors(upperBindDir, naturalDir);
     const upperLocal = shoulderParentQ.clone().invert().multiply(upperWorldDelta).multiply(shoulderParentQ);
     armOffsets[upperBone] = [upperLocal.x, upperLocal.y, upperLocal.z, upperLocal.w];
 
-    // Forearm gets its OWN target (FOREARM_NATURAL_DIR, a bit more inward) —
-    // a slight elbow bend, not a rigid straight arm. Leaving the forearm's
-    // local rotation at identity does NOT mean "continue straight": identity
-    // means "keep whatever bend bind pose already had", which combines
-    // unpredictably (even crossing to the other side of the body) once the
-    // upper arm is rotated far from T-pose.
-    //
     // The elbow's ACTUAL parent at playback is the upper arm's NEW orientation
     // (newShoulderWorldQ), so that's the left-side conjugation. But the elbow's
-    // bind world quat (needed as the "starting point" the world-space delta D2
-    // rotates away from) is P, the same as the shoulder's own bind world quat —
-    // both upper arm and forearm sit at identity local rotation in bind pose, so
-    // world_bind(elbow) = P, not newShoulderWorldQ. Solving
-    // newShoulderWorldQ · lowerLocal = D2 · P  for lowerLocal gives an asymmetric
-    // conjugation (left side ≠ right side) — using newShoulderWorldQ on both
-    // sides (symmetric, like the upper arm's own formula) was the bug that sent
-    // the forearm swinging up behind her instead of continuing down.
+    // bind world quat (the "starting point" the world-space delta rotates away
+    // from) is P, the same as the shoulder's own bind world quat — both sit at
+    // identity local rotation in bind pose. Solving
+    // newShoulderWorldQ · lowerLocal = D2 · P  for lowerLocal gives an
+    // asymmetric conjugation (left side ≠ right side).
     const forearmNaturalDir = new THREE.Vector3(...FOREARM_NATURAL_DIR[mixName]).normalize();
     const newShoulderWorldQ = shoulderParentQ.clone().multiply(upperLocal);
     const lowerWorldDelta = new THREE.Quaternion().setFromUnitVectors(lowerBindDir, forearmNaturalDir);
@@ -265,8 +295,6 @@ function buildRestIdleClip(THREE, vrm, opts) {
     armOffsets[lowerBone] = [lowerLocal.x, lowerLocal.y, lowerLocal.z, lowerLocal.w];
   }
 
-  // Upper arms + forearms both get an explicit natural-hang target (straight
-  // arm, no bend); hands hold their own bind rest.
   const RESTING_BONES = ['leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm', 'leftHand', 'rightHand'];
   const tracks = [];
   for (const boneName of RESTING_BONES) {
@@ -278,4 +306,4 @@ function buildRestIdleClip(THREE, vrm, opts) {
   return new THREE.AnimationClip(name, duration, tracks);
 }
 
-module.exports = { MIXAMO_TO_VRM, SRC_REST, buildRetargeter, buildRestIdleClip };
+module.exports = { MIXAMO_TO_VRM, VRM_PARENT, CHAIN_CHILD, buildRetargeter, buildRestIdleClip };
